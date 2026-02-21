@@ -73,6 +73,8 @@ fi
 # ── Step 4: Get endpoint + determine provider [MICROSOFT-NORMATIVE] ──────────
 ENDPOINT=$(az cognitiveservices account show -g "$RG" -n "$RES" --query "properties.endpoint" -o tsv)
 [[ -z "$ENDPOINT" ]] && { echo "ERROR: No endpoint for $RES" >&2; exit 4; }
+# ARM spec: properties.endpoint may or may not include trailing slash — normalise
+[[ "$ENDPOINT" != */ ]] && ENDPOINT="${ENDPOINT}/"
 
 if echo "$ENDPOINT" | grep -q 'cognitiveservices.azure.com'; then
   PROVIDER="azure-cognitive-services"
@@ -93,18 +95,28 @@ DEPLOY_COUNT=$(echo "$DEPLOY_JSON" | jq 'length')
 
 echo "" >&2
 echo "Deployments on $RES:" >&2
-echo "$DEPLOY_JSON" | jq -r '.[] | "  \(.name)" + (if (.name | ascii_downcase) != (.properties.model.name | ascii_downcase) then " (model: \(.properties.model.name))" else "" end)' >&2
+echo "$DEPLOY_JSON" | jq -r '.[] | "  \(.name)" + (if .properties.model.name != null and ((.name | ascii_downcase) != (.properties.model.name | ascii_downcase)) then " (model: \(.properties.model.name))" else "" end)' >&2
 
 # ── Step 6: Build whitelist + models block ────────────────────────────────────
+# LOWERCASE CONTRACT: OpenCode's whitelist check (provider.ts) uses
+# Array.includes() — case-sensitive, no normalization. models.dev emits all
+# Azure model IDs in lowercase (gpt-4o, o1, phi-4, etc.). azure deployment
+# names are user-defined and may be mixed-case. ascii_downcase normalizes both
+# so whitelist entries always match what OpenCode looks up.
+# Invariant asserted in: scripts/test-invariants.sh INV-01 + INV-02.
+# If INV-01 ever fails (models.dev drifts to mixed-case), revisit this logic.
+# ARM schema: properties.model.name and .version are optional (auto-versioning).
+# Use // empty to drop nulls rather than emitting the string "null".
 WHITELIST=$(echo "$DEPLOY_JSON" | jq -r '
-  [.[] | .name, .properties.model.name]
+  [.[] | .name, (.properties.model.name // empty)]
   | map(ascii_downcase)
   | unique
   | sort
 ')
 
 CUSTOM_MODELS=$(echo "$DEPLOY_JSON" | jq '
-  [.[] | select((.name | ascii_downcase) != (.properties.model.name | ascii_downcase))
+  [.[] | select(.properties.model.name != null)
+       | select((.name | ascii_downcase) != (.properties.model.name | ascii_downcase))
        | select(.properties.model.name | test("^(gpt|o[0-9]|text-)") | not)]
   | if length > 0 then
       reduce .[] as $d ({}; .[$d.name | ascii_downcase] = {"name": "\($d.properties.model.name) (Azure)"})
@@ -117,7 +129,7 @@ TEST_DEPLOY=$(echo "$DEPLOY_JSON" | jq -r '[.[] | select(.name | test("^gpt"))][
 
 echo "" >&2
 echo "Verifying endpoint with deployment '$TEST_DEPLOY'..." >&2
-VERIFY_URL="${ENDPOINT}openai/deployments/${TEST_DEPLOY}/chat/completions?api-version=2024-12-01-preview"
+VERIFY_URL="${ENDPOINT}openai/deployments/${TEST_DEPLOY}/chat/completions?api-version=2024-10-21"
 # Pass API key via --config stdin to avoid exposing it in process list
 VERIFY_RESP=$(curl -sS -w "\n%{http_code}" "$VERIFY_URL" \
   --config <(printf 'header = "api-key: %s"\n' "$API_KEY") \
@@ -170,15 +182,15 @@ else
     zsh)  RC_FILE="$HOME/.zshrc";;
     *)    RC_FILE="$HOME/.bashrc";;
   esac
-  EXPORT_LINE="export $ENV_VAR=\"$RES\""
   if ! grep -qF "$ENV_VAR" "$RC_FILE" 2>/dev/null; then
-    echo "$EXPORT_LINE" >> "$RC_FILE"
+    printf 'export %s=%q\n' "$ENV_VAR" "$RES" >> "$RC_FILE"
     echo "  Added $ENV_VAR to $RC_FILE" >&2
   else
-    sed -i.bak "s|^export ${ENV_VAR}=.*|${EXPORT_LINE}|" "$RC_FILE"
+    grep -v "^export ${ENV_VAR}=" "$RC_FILE" > "${RC_FILE}.tmp" && mv "${RC_FILE}.tmp" "$RC_FILE"
+    printf 'export %s=%q\n' "$ENV_VAR" "$RES" >> "$RC_FILE"
     echo "  Updated $ENV_VAR in $RC_FILE" >&2
   fi
-  eval "$EXPORT_LINE"
+  export "${ENV_VAR}=${RES}"
 
   # 8b. Merge into opencode.json
   if [[ -f "$CONFIG_PATH" ]]; then

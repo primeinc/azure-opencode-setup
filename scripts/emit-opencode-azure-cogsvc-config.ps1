@@ -12,7 +12,7 @@
   If set: writes config to opencode.json, sets env var persistently, verifies endpoint.
   If not set: prints JSON to stdout only (dry run).
 .PARAMETER ConfigPath
-  Path to opencode.json. Default: ~/.config/opencode/opencode.json
+  Path to opencode.json. Default: %APPDATA%\opencode\opencode.json
 .EXAMPLE
   .\emit-opencode-azure-cogsvc-config.ps1                           # full auto, dry run
   .\emit-opencode-azure-cogsvc-config.ps1 -Apply                    # full auto, apply everything
@@ -24,7 +24,7 @@ param(
   [string]$Resource,
   [string]$ResourceGroup,
   [switch]$Apply,
-  [string]$ConfigPath = (Join-Path $env:USERPROFILE ".config\opencode\opencode.json")
+  [string]$ConfigPath = (Join-Path $env:APPDATA "opencode\opencode.json")
 )
 $ErrorActionPreference = "Stop"
 
@@ -93,6 +93,8 @@ if (-not $ResourceGroup) { throw "Could not find resource group for '$Resource'"
 # ── Step 4: Get endpoint + determine provider [MICROSOFT-NORMATIVE] ──────────
 $Endpoint = az cognitiveservices account show -g $ResourceGroup -n $Resource --query "properties.endpoint" -o tsv
 if (-not $Endpoint) { throw "No endpoint for $Resource" }
+# ARM spec: properties.endpoint may or may not include trailing slash — normalise
+if (-not $Endpoint.EndsWith('/')) { $Endpoint = "$Endpoint/" }
 
 if ($Endpoint -match 'cognitiveservices\.azure\.com') {
   $Provider = "azure-cognitive-services"
@@ -121,11 +123,22 @@ foreach ($d in $deployments) {
 }
 
 # ── Step 6: Build whitelist + models block ────────────────────────────────────
+# LOWERCASE CONTRACT: OpenCode's whitelist check (provider.ts) uses
+# Array.includes() — case-sensitive, no normalization. models.dev emits all
+# Azure model IDs in lowercase (gpt-4o, o1, phi-4, etc.). Azure deployment
+# names are user-defined and may be mixed-case. .ToLower() normalizes both
+# so whitelist entries always match what OpenCode looks up.
+# Invariant asserted in: scripts/test-invariants.sh INV-01 + INV-02.
+# If INV-01 ever fails (models.dev drifts to mixed-case), revisit this logic.
+# ARM schema: properties.model.name may be null when auto-versioning is enabled.
 $allNames = @()
 foreach ($d in $deployments) {
   $allNames += $d.name.ToLower()
-  $modelName = $d.properties.model.name.ToLower()
-  if ($modelName -ne $d.name.ToLower()) { $allNames += $modelName }
+  # ARM schema: properties.model.version is optional; model.name may also be null with auto-versioning
+  if ($d.properties.model.name) {
+    $modelName = $d.properties.model.name.ToLower()
+    if ($modelName -ne $d.name.ToLower()) { $allNames += $modelName }
+  }
 }
 $whitelist = $allNames | Sort-Object -Unique
 
@@ -144,7 +157,7 @@ $testDeployment = ($deployments | Where-Object { $_.name -match '^gpt' } | Selec
 if (-not $testDeployment) { $testDeployment = $deployments[0].name }
 
 Write-Host "`nVerifying endpoint with deployment '$testDeployment'..." -ForegroundColor Yellow
-$testUrl = "${Endpoint}openai/deployments/$testDeployment/chat/completions?api-version=2024-12-01-preview"
+$testUrl = "${Endpoint}openai/deployments/$testDeployment/chat/completions?api-version=2024-10-21"
 try {
   # Invoke-WebRequest keeps key in-memory (.NET call, not visible in process list)
   $resp = Invoke-WebRequest -Uri $testUrl -Method Post `
@@ -225,8 +238,9 @@ if (-not $Apply) {
   Write-Host "  Written to $ConfigPath" -ForegroundColor Green
 
   # 8c. Write API key to auth.json (same format as /connect writes)
-  # Path: ~/.local/share/opencode/auth.json [OPENCODE-NORMATIVE: troubleshooting.mdx]
-  $authPath = Join-Path $env:USERPROFILE ".local\share\opencode\auth.json"
+  # Path: %LOCALAPPDATA%\opencode\auth.json
+  # Source: xdg-basedir on Windows resolves data dir to %LOCALAPPDATA% (global/index.ts)
+  $authPath = Join-Path $env:LOCALAPPDATA "opencode\auth.json"
   $authDir = Split-Path $authPath
   if (-not (Test-Path $authDir)) { New-Item -Path $authDir -ItemType Directory -Force | Out-Null }
   if (Test-Path $authPath) {
@@ -240,6 +254,28 @@ if (-not $Apply) {
     key  = $ApiKey
   }) -Force
   $authJson | ConvertTo-Json -Depth 4 | Set-Content $authPath -Encoding UTF8
+  # Restrict auth.json to current user only (equivalent of bash chmod 600)
+  # Pattern from: https://learn.microsoft.com/en-us/dotnet/api/system.security.accesscontrol.filesystemaccessrule.-ctor
+  # Restrict auth.json to current user only (chmod 600 equivalent).
+  # Strategy: ResetAccessRule atomically removes ALL existing ACEs (explicit + inherited-converted)
+  # then adds exactly one rule — no loop, no iteration-while-modifying hazard.
+  # SetAccessRuleProtection($true, $false) disables inheritance and drops inherited ACEs first,
+  # so ResetAccessRule only has to deal with whatever explicit ACEs remain.
+  # Refs:
+  #   SetAccessRuleProtection: learn.microsoft.com/dotnet/api/system.security.accesscontrol.objectsecurity.setaccessruleprotection
+  #   ResetAccessRule: learn.microsoft.com/dotnet/api/system.security.accesscontrol.commonobjectsecurity.resetaccessrule
+  $acl = Get-Acl -LiteralPath $authPath
+  $acl.SetAccessRuleProtection($true, $false)  # isProtected=true, preserveInheritance=false → strips inherited ACEs
+  $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+  $rule = New-Object System.Security.AccessControl.FileSystemAccessRule -ArgumentList @(
+      $currentUser,
+      [System.Security.AccessControl.FileSystemRights]::FullControl,
+      [System.Security.AccessControl.AccessControlType]::Allow
+  )
+  # ResetAccessRule = remove ALL ACEs in DACL, then add this one rule. Single atomic operation.
+  # Handles pre-existing explicit ACEs (e.g. SYSTEM, Administrators) without iteration.
+  $acl.ResetAccessRule($rule)
+  Set-Acl -LiteralPath $authPath -AclObject $acl
   Write-Host "  API key written to $authPath" -ForegroundColor Green
 
   # Clear key from memory
