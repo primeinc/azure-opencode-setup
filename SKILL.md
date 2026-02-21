@@ -55,18 +55,32 @@ With `-Apply`, there are zero manual steps. The script writes directly to `auth.
 | 6 | Configure `opencode.json` | Whitelist + disabled_providers |
 | 7 | Validate quota | `references/quota-validation.md` |
 
-### Endpoint → provider mapping [MICROSOFT-NORMATIVE]
+### Two Azure providers [OPENCODE-NORMATIVE: anomalyco/models.dev providers/]
 
-| Endpoint pattern | Provider | Env var |
-|---|---|---|
-| `*.cognitiveservices.azure.com` | `azure-cognitive-services` | `AZURE_COGNITIVE_SERVICES_RESOURCE_NAME` |
-| `*.openai.azure.com` | `azure` | `AZURE_RESOURCE_NAME` |
+OpenCode has two Azure providers. They use the same SDK (`@ai-sdk/azure`) but different endpoints and env vars:
 
-Source of truth: `az cognitiveservices account show -g <RG> -n <RES> --query properties.endpoint -o tsv`
+| Endpoint pattern | Provider ID | Resource name env var | Catalog models |
+|---|---|---|---|
+| `*.cognitiveservices.azure.com` | `azure-cognitive-services` | `AZURE_COGNITIVE_SERVICES_RESOURCE_NAME` | 94 |
+| `*.openai.azure.com` | `azure` | `AZURE_RESOURCE_NAME` | 95 |
+
+Disable the one you don't use via `disabled_providers` to prevent duplicate model entries.
+
+Source of truth for your endpoint: `az cognitiveservices account show -g <RG> -n <RES> --query properties.endpoint -o tsv`
+
+### Auth flow [OPENCODE-NORMATIVE: anomalyco/opencode provider.ts]
+
+**Env var = resource name only.** The env var tells OpenCode: (a) this provider exists, (b) where to point the base URL.
+
+**API key = `auth.json` only.** Stored at `~/.local/share/opencode/auth.json` (Windows: `%USERPROFILE%\.local\share\opencode\auth.json`). Written by `-Apply`, `/connect`, or `opencode auth login`.
+
+> **Why not `AZURE_COGNITIVE_SERVICES_API_KEY`?** provider.toml declares it, but `provider.ts` line 901 only extracts the key when `env.length === 1`. Since this provider has 2 env vars, the key is always `undefined` via env. auth.json is the only working path.
+
+Format: `{ "azure-cognitive-services": { "type": "api", "key": "<key>" } }`
 
 ### Set env var (persistent) [PROPOSED]
 
-The env var holds the **resource name only**. API key is stored in `~/.local/share/opencode/auth.json` (written by `-Apply` or `/connect`).
+The env var holds the **resource name only**.
 
 **Windows (PowerShell):**
 ```powershell
@@ -109,10 +123,19 @@ source ~/.bashrc
 }
 ```
 
-### Whitelist rules [PROPOSED]
+### Whitelist rules [OPENCODE-NORMATIVE: provider.ts line 1003-1006]
 
-1. **Deployment name is truth.** Every deployment name (lowercased) goes in the whitelist.
-2. **Model name added when it differs.** If Azure metadata shows `model.name` ≠ `deployment.name`, add the model name (lowercased) too. Example: deployment `kimi-k2` → model `Kimi-K2-Thinking` → whitelist gets both `kimi-k2` and `kimi-k2-thinking`.
+Whitelist entries are matched against `modelID` from the models.dev catalog (94 entries for `azure-cognitive-services`). Not deployment names directly. Also supports `blacklist`.
+
+```ts
+// provider.ts line 1003-1006 — the actual matching logic
+if (configProvider?.whitelist && !configProvider.whitelist.includes(modelID))
+  delete provider.models[modelID]
+```
+
+Rules:
+1. **Use catalog names.** Whitelist entries must match models.dev catalog IDs (e.g., `kimi-k2-thinking`, not `kimi-k2`). Our script lowercases deployment+model names, which aligns with catalog IDs.
+2. **Add deployment name too when it differs.** Covers cases where OpenCode uses deployment name for routing (e.g., `kimi-k2` deployment name, `kimi-k2-thinking` catalog name — add both).
 3. **Include all deployments.** Don't skip embeddings or utility models (`text-embedding-3-small`, `model-router`).
 4. **`models` block** only for deployments absent from the built-in catalog. Gives them a display name in `/models`.
 
