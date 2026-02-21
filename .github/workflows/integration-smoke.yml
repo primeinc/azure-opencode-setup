@@ -91,11 +91,21 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Confirm working directory
+        if: steps.creds-check.outputs.skip == 'false'
+        shell: pwsh
+        run: |
+          Write-Host "PWD: $(Get-Location)"
+          Get-ChildItem scripts\emit-opencode-azure-cogsvc-config.ps1 | Select-Object FullName
+
       - name: Run smoke test
         if: steps.creds-check.outputs.skip == 'false'
         shell: pwsh
         run: |
+          # Use Join-Path so the path is correct regardless of cwd quirks.
+          # pwsh -File requires an absolute path on some runners.
+          $script = Join-Path $env:GITHUB_WORKSPACE 'scripts\emit-opencode-azure-cogsvc-config.ps1'
           $smokeArgs = @('-VerifyOnly')
           if ('${{ inputs.subscription }}' -ne '') { $smokeArgs += '-Subscription'; $smokeArgs += '${{ inputs.subscription }}' }
           if ('${{ inputs.resource }}'     -ne '') { $smokeArgs += '-Resource';     $smokeArgs += '${{ inputs.resource }}' }
-          & scripts/emit-opencode-azure-cogsvc-config.ps1 @smokeArgs
+          & $script @smokeArgs
