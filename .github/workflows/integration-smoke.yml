@@ -10,8 +10,10 @@ on:
         description: "Azure resource name (optional — auto-picks best if blank)"
         required: false
 
+# OIDC token only needed when secrets are configured.
+# If secrets are absent the guard step exits 0 and skips everything after.
 permissions:
-  id-token: write   # OIDC token for azure/login
+  id-token: write
   contents: read
 
 jobs:
@@ -21,7 +23,24 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
+      - name: Check Azure credentials
+        id: creds-check
+        env:
+          CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          if [[ -z "$CLIENT_ID" || -z "$TENANT_ID" || -z "$SUBSCRIPTION_ID" ]]; then
+            echo "SKIP: AZURE_CLIENT_ID / AZURE_TENANT_ID / AZURE_SUBSCRIPTION_ID not configured."
+            echo "      Configure these secrets to enable real Azure smoke testing."
+            echo "      See references/contracts.md for setup guidance."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Azure login (OIDC)
+        if: steps.creds-check.outputs.skip == 'false'
         uses: azure/login@a65d910e8af852a8061c627c456678983e180302  # v2.2.0
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -29,9 +48,11 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Install jq
+        if: steps.creds-check.outputs.skip == 'false'
         run: sudo apt-get install -y jq
 
       - name: Run smoke test
+        if: steps.creds-check.outputs.skip == 'false'
         run: |
           set -euo pipefail
           ARGS="--smoke"
@@ -45,7 +66,25 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
+      - name: Check Azure credentials
+        id: creds-check
+        env:
+          CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        shell: pwsh
+        run: |
+          if (-not $env:CLIENT_ID -or -not $env:TENANT_ID -or -not $env:SUBSCRIPTION_ID) {
+            Write-Host "SKIP: AZURE_CLIENT_ID / AZURE_TENANT_ID / AZURE_SUBSCRIPTION_ID not configured."
+            Write-Host "      Configure these secrets to enable real Azure smoke testing."
+            Write-Host "      See references/contracts.md for setup guidance."
+            "skip=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          } else {
+            "skip=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          }
+
       - name: Azure login (OIDC)
+        if: steps.creds-check.outputs.skip == 'false'
         uses: azure/login@a65d910e8af852a8061c627c456678983e180302  # v2.2.0
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -53,9 +92,10 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Run smoke test
+        if: steps.creds-check.outputs.skip == 'false'
         shell: pwsh
         run: |
-          $args = @('-VerifyOnly')
-          if ('${{ inputs.subscription }}' -ne '') { $args += '-Subscription'; $args += '${{ inputs.subscription }}' }
-          if ('${{ inputs.resource }}'     -ne '') { $args += '-Resource';     $args += '${{ inputs.resource }}' }
-          & scripts/emit-opencode-azure-cogsvc-config.ps1 @args
+          $smokeArgs = @('-VerifyOnly')
+          if ('${{ inputs.subscription }}' -ne '') { $smokeArgs += '-Subscription'; $smokeArgs += '${{ inputs.subscription }}' }
+          if ('${{ inputs.resource }}'     -ne '') { $smokeArgs += '-Resource';     $smokeArgs += '${{ inputs.resource }}' }
+          & scripts/emit-opencode-azure-cogsvc-config.ps1 @smokeArgs
