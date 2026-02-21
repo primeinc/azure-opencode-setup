@@ -8,6 +8,9 @@ on:
 
 jobs:
   # ── Skill spec compliance ───────────────────────────────────────────────────
+  # NOTE: @agentskills/cli is not on the public npm registry.
+  # Until a confirmed public package name is available, these checks are
+  # implemented directly: link integrity via grep, token budget via wc.
   skill-spec:
     name: Skill spec (token budgets + reference links)
     runs-on: ubuntu-latest
@@ -15,14 +18,65 @@ jobs:
       # SHA-pinned: actions/checkout@v4 (v4.2.2, 2024-10-23)
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
-      - name: Install npx skills tooling
-        run: npm install -g @agentskills/cli
+      - name: Check SKILL.md required frontmatter fields
+        run: |
+          grep -q "^name:" SKILL.md          || { echo "FAIL: missing 'name:' in frontmatter"; exit 1; }
+          grep -q "^description:" SKILL.md   || { echo "FAIL: missing 'description:' in frontmatter"; exit 1; }
+          echo "PASS: required frontmatter fields present"
 
-      - name: Validate references (no broken links, no orphans)
-        run: npx skills references --dir .
+      - name: Check all reference links are markdown hyperlinks (not code-spans)
+        run: |
+          # Fail if any references/ path appears as a backtick code-span (not a hyperlink)
+          if grep -qP '`references/[^`]+`' SKILL.md; then
+            echo "FAIL: code-span reference links found — must use [text](path) format"
+            grep -nP '`references/[^`]+`' SKILL.md
+            exit 1
+          fi
+          echo "PASS: no code-span reference links"
 
-      - name: Check token budgets
-        run: npx skills tokens --check --dir .
+      - name: Check no orphaned references (all files linked)
+        run: |
+          FAIL=0
+          for f in references/*.md; do
+            name=$(basename "$f")
+            if ! grep -q "$name" SKILL.md; then
+              echo "FAIL: $f is not linked from SKILL.md"
+              FAIL=$(( FAIL + 1 ))
+            fi
+          done
+          [ "$FAIL" -eq 0 ] && echo "PASS: all references/ files linked from SKILL.md"
+          exit "$FAIL"
+
+      - name: Check SKILL.md token budget (soft limit 500 tokens ~ 667 words)
+        run: |
+          WORDS=$(wc -w < SKILL.md)
+          TOKENS=$(( WORDS * 3 / 4 ))
+          echo "SKILL.md: ~${WORDS} words, ~${TOKENS} estimated tokens"
+          if [ "$TOKENS" -gt 5000 ]; then
+            echo "FAIL: SKILL.md exceeds hard token limit (5000 tokens)"
+            exit 1
+          elif [ "$TOKENS" -gt 500 ]; then
+            echo "WARN: SKILL.md exceeds soft token limit (500 tokens) — consider moving content to references/"
+          else
+            echo "PASS: within soft token limit"
+          fi
+
+      - name: Check reference files token budgets (soft 1000, hard 2000)
+        run: |
+          FAIL=0
+          for f in references/*.md; do
+            WORDS=$(wc -w < "$f")
+            TOKENS=$(( WORDS * 3 / 4 ))
+            if [ "$TOKENS" -gt 2000 ]; then
+              echo "FAIL: $f exceeds hard token limit (~${TOKENS} tokens)"
+              FAIL=$(( FAIL + 1 ))
+            elif [ "$TOKENS" -gt 1000 ]; then
+              echo "WARN: $f exceeds soft token limit (~${TOKENS} tokens)"
+            else
+              echo "PASS: $f (~${TOKENS} tokens)"
+            fi
+          done
+          exit "$FAIL"
 
   # ── Contract invariants (snapshot-based, deterministic) ────────────────────
   # Asserts against references/models.dev.azure.json (vendored).
@@ -92,9 +146,7 @@ jobs:
 
       - name: ShellCheck emit script
         # SC2034: unused vars (some intentional), SC1090: dynamic source
-        run: shellcheck --severity=warning --exclude=SC2034,SC1090 \
-               scripts/emit-opencode-azure-cogsvc-config.sh
+        run: shellcheck --severity=warning --exclude=SC2034,SC1090 scripts/emit-opencode-azure-cogsvc-config.sh
 
       - name: ShellCheck invariant test
-        run: shellcheck --severity=warning --exclude=SC2034,SC1090 \
-               scripts/test-invariants.sh
+        run: shellcheck --severity=warning --exclude=SC2034,SC1090 scripts/test-invariants.sh
