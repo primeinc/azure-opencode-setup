@@ -1,0 +1,5 @@
+# SHA-256 checksums for core automation scripts
+# Regenerate: sha256sum scripts/emit-opencode-azure-cogsvc-config.sh scripts/emit-opencode-azure-cogsvc-config.ps1 > checksums.txt
+
+415ab8bee1c8d98aca64e4501ca3ae617f697e6b1f427797ef6d9c5cb5222297 *scripts/emit-opencode-azure-cogsvc-config.sh
+e9b5347977c8586bfa4e2be003a1c6e19976ecc2336e8cea7753d177cb4377ec *scripts/emit-opencode-azure-cogsvc-config.ps1

@@ -30,16 +30,24 @@ Run the automation script. All params optional — with zero args it scans every
 # PowerShell — dry run (prints JSON, changes nothing)
 .\scripts\emit-opencode-azure-cogsvc-config.ps1
 
-# PowerShell — apply (writes opencode.json, sets env var, verifies endpoint)
+# PowerShell — apply (writes opencode.json + auth.json, no env writes by default)
 .\scripts\emit-opencode-azure-cogsvc-config.ps1 -Apply
+
+# Optional: set env in current session
+.\scripts\emit-opencode-azure-cogsvc-config.ps1 -Apply -SetEnv
+
+# Optional: persist env var (User scope)
+.\scripts\emit-opencode-azure-cogsvc-config.ps1 -Apply -PersistEnv
 
 # Target a specific resource
 .\scripts\emit-opencode-azure-cogsvc-config.ps1 -Subscription "<SUB_ID>" -Resource "<RESOURCE>" -Apply
 ```
 ```bash
-# Bash (requires jq) — same flags
+# Bash (requires jq)
 ./scripts/emit-opencode-azure-cogsvc-config.sh                    # dry run
-./scripts/emit-opencode-azure-cogsvc-config.sh --apply            # apply
+./scripts/emit-opencode-azure-cogsvc-config.sh --apply            # apply (no env writes)
+./scripts/emit-opencode-azure-cogsvc-config.sh --apply --set-env  # set env in current shell
+./scripts/emit-opencode-azure-cogsvc-config.sh --apply --persist-env  # persist env in rc file
 ./scripts/emit-opencode-azure-cogsvc-config.sh --subscription "<SUB_ID>" --resource "<RESOURCE>" --apply
 ```
 
@@ -47,7 +55,8 @@ What the script does (in order):
 1. Scans subscriptions → finds AI resources → picks the one with most deployments
 2. Lists deployments → builds whitelist (deployment names + model names when they differ)
 3. Verifies endpoint with a live API call
-4. With `-Apply`: merges config into `opencode.json`, sets env var persistently, writes API key to `auth.json`
+4. With `-Apply`: merges config into `opencode.json`, writes API key to `auth.json`.
+   Env vars are optional (`-SetEnv`/`--set-env`, `-PersistEnv`/`--persist-env`).
 
 With `-Apply`, there are zero manual steps. The script writes directly to `auth.json` (same location `/connect` uses). Restart OpenCode to pick up changes.
 
@@ -58,7 +67,7 @@ With `-Apply`, there are zero manual steps. The script writes directly to `auth.
 | 1 | Discover resource | [Discovery scripts](references/discovery-scripts.md) |
 | 2 | Match endpoint → provider | Table below |
 | 3 | Verify endpoint | [Verify endpoint](references/verify-endpoint.md) |
-| 4 | Set env var (persistent) | Platform commands below |
+| 4 | Optional env var setup | Use `-SetEnv` / `-PersistEnv` only if needed |
 | 5 | API key stored | `-Apply` writes to `auth.json` directly. Manual path: `/connect` in OpenCode. |
 | 6 | Configure `opencode.json` | Whitelist + disabled_providers |
 | 7 | Validate quota | [Quota validation](references/quota-validation.md) |
@@ -78,34 +87,32 @@ Source of truth for your endpoint: `az cognitiveservices account show -g <RG> -n
 
 ### Auth flow
 
-**Env var = resource name only.** The env var tells OpenCode: (a) this provider exists, (b) where to point the base URL.
+**No env var required by default.** Script now writes `provider.<id>.options.baseURL` into `opencode.json`, which OpenCode uses directly.
+Env vars are optional compatibility mode.
 
-**API key = `auth.json` only.** Stored at `~/.local/share/opencode/auth.json` (Windows: `%USERPROFILE%\.local\share\opencode\auth.json`). Written by `-Apply`, `/connect`, or `opencode auth login`.
+**API key = `auth.json` only.** Stored at `~/.local/share/opencode/auth.json` (Windows: `%LOCALAPPDATA%\opencode\auth.json`). Written by `-Apply`, `/connect`, or `opencode auth login`.
 
 > **Why not `AZURE_COGNITIVE_SERVICES_API_KEY`?** provider.toml declares it, but `provider.ts` line 901 only extracts the key when `env.length === 1`. Since this provider has 2 env vars, the key is always `undefined` via env. auth.json is the only working path.
 
 Format: `{ "azure-cognitive-services": { "type": "api", "key": "<key>" } }`
 
-### Set env var (persistent)
+### Optional env var setup
 
-The env var holds the **resource name only**.
+Use this only if you explicitly want environment-driven provider config.
 
 **Windows (PowerShell):**
 ```powershell
-setx AZURE_COGNITIVE_SERVICES_RESOURCE_NAME "<RESOURCE>"
-# Restart terminal for setx to take effect
+[System.Environment]::SetEnvironmentVariable("AZURE_COGNITIVE_SERVICES_RESOURCE_NAME", "<RESOURCE>", "User")
 ```
 
 **macOS (zsh):**
 ```zsh
-echo 'export AZURE_COGNITIVE_SERVICES_RESOURCE_NAME="<RESOURCE>"' >> ~/.zshrc
-source ~/.zshrc
+export AZURE_COGNITIVE_SERVICES_RESOURCE_NAME="<RESOURCE>"
 ```
 
 **Linux (bash):**
 ```bash
-echo 'export AZURE_COGNITIVE_SERVICES_RESOURCE_NAME="<RESOURCE>"' >> ~/.bashrc
-source ~/.bashrc
+export AZURE_COGNITIVE_SERVICES_RESOURCE_NAME="<RESOURCE>"
 ```
 
 ### Config template

@@ -18,7 +18,7 @@ $resource = "<RESOURCE_NAME>"
 $deployment = "<DEPLOYMENT_NAME>"  # e.g., gpt-4o
 
 Invoke-RestMethod `
-  -Uri "https://$resource.cognitiveservices.azure.com/openai/deployments/$deployment/chat/completions?api-version=2024-12-01-preview" `
+  -Uri "https://$resource.cognitiveservices.azure.com/openai/deployments/$deployment/chat/completions?api-version=2024-10-21" `
   -Method Post `
   -Headers @{"api-key"=$key} `
   -ContentType "application/json" `
@@ -32,8 +32,8 @@ KEY=$(az cognitiveservices account keys list -g <RG> -n <RESOURCE> --query "key1
 RESOURCE="<RESOURCE_NAME>"
 DEPLOYMENT="<DEPLOYMENT_NAME>"
 
-curl -s "https://${RESOURCE}.cognitiveservices.azure.com/openai/deployments/${DEPLOYMENT}/chat/completions?api-version=2024-12-01-preview" \
-  -H "api-key: ${KEY}" \
+curl -s "https://${RESOURCE}.cognitiveservices.azure.com/openai/deployments/${DEPLOYMENT}/chat/completions?api-version=2024-10-21" \
+  --config <(printf 'header = "api-key: %s"\n' "$KEY") \
   -H "Content-Type: application/json" \
   -d '{"messages":[{"role":"user","content":"Say hello"}],"max_tokens":10}'
 ```
@@ -48,7 +48,7 @@ $resource = "<RESOURCE_NAME>"
 $deployment = "<DEPLOYMENT_NAME>"
 
 Invoke-RestMethod `
-  -Uri "https://$resource.openai.azure.com/openai/deployments/$deployment/chat/completions?api-version=2024-12-01-preview" `
+  -Uri "https://$resource.openai.azure.com/openai/deployments/$deployment/chat/completions?api-version=2024-10-21" `
   -Method Post `
   -Headers @{"api-key"=$key} `
   -ContentType "application/json" `
@@ -62,8 +62,8 @@ KEY=$(az cognitiveservices account keys list -g <RG> -n <RESOURCE> --query "key1
 RESOURCE="<RESOURCE_NAME>"
 DEPLOYMENT="<DEPLOYMENT_NAME>"
 
-curl -s "https://${RESOURCE}.openai.azure.com/openai/deployments/${DEPLOYMENT}/chat/completions?api-version=2024-12-01-preview" \
-  -H "api-key: ${KEY}" \
+curl -s "https://${RESOURCE}.openai.azure.com/openai/deployments/${DEPLOYMENT}/chat/completions?api-version=2024-10-21" \
+  --config <(printf 'header = "api-key: %s"\n' "$KEY") \
   -H "Content-Type: application/json" \
   -d '{"messages":[{"role":"user","content":"Say hello"}],"max_tokens":10}'
 ```

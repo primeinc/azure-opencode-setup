@@ -6,12 +6,14 @@
 # Requirements: az (authenticated), jq
 # Usage:
 #   ./emit-opencode-azure-cogsvc-config.sh                                      # full auto, dry run
-#   ./emit-opencode-azure-cogsvc-config.sh --apply                              # full auto, apply
+#   ./emit-opencode-azure-cogsvc-config.sh --apply                              # full auto, apply (no env writes)
+#   ./emit-opencode-azure-cogsvc-config.sh --apply --set-env                    # also set env in current shell
+#   ./emit-opencode-azure-cogsvc-config.sh --apply --persist-env                # persist env to ~/.bashrc or ~/.zshrc
 #   ./emit-opencode-azure-cogsvc-config.sh --subscription <id> --resource <name>
 #   ./emit-opencode-azure-cogsvc-config.sh --subscription <id> --apply
 set -euo pipefail
 
-SUB="" RES="" RG="" APPLY=false SMOKE=false
+SUB="" RES="" RG="" APPLY=false SMOKE=false SET_ENV=false PERSIST_ENV=false
 CONFIG_PATH="${HOME}/.config/opencode/opencode.json"
 
 while [[ $# -gt 0 ]]; do
@@ -22,6 +24,8 @@ while [[ $# -gt 0 ]]; do
     --apply)        APPLY=true; shift;;
     --config)       CONFIG_PATH="$2"; shift 2;;
     --smoke)        SMOKE=true; shift;;
+    --set-env)      SET_ENV=true; shift;;
+    --persist-env)  SET_ENV=true; PERSIST_ENV=true; shift;;
     *) echo "Unknown arg: $1" >&2; exit 2;;
   esac
 done
@@ -149,15 +153,21 @@ else
 fi
 
 # ── Step 8: Build output ─────────────────────────────────────────────────────
+BASE_URL="${ENDPOINT}openai"
+
 CONFIG_BLOCK=$(jq -n \
   --arg provider "$PROVIDER" \
   --arg disable "$DISABLE" \
+  --arg baseURL "$BASE_URL" \
   --argjson whitelist "$WHITELIST" \
   --argjson models "$CUSTOM_MODELS" \
 '{
   "disabled_providers": [$disable],
   "provider": {
     ($provider): {
+      "options": {
+        "baseURL": $baseURL
+      },
       "whitelist": $whitelist,
       "models": $models
     }
@@ -194,7 +204,8 @@ fi
 if [[ "$APPLY" == false ]]; then
   echo "" >&2
   echo "// ---- paste into opencode.json ----" >&2
-  echo "// Env var: $ENV_VAR=$RES" >&2
+  echo "// No env var required: provider.options.baseURL is written in config" >&2
+  echo "// Optional env var mode: --set-env (session) or --persist-env (shell profile)" >&2
   echo "// API key: /connect in OpenCode, paste output of:" >&2
   echo "//   az cognitiveservices account keys list -g $RG -n $RES --query key1 -o tsv" >&2
   echo "" >&2
@@ -204,21 +215,29 @@ else
   echo "" >&2
   echo "Applying configuration..." >&2
 
-  # 8a. Set env var persistently
-  SHELL_NAME=$(basename "${SHELL:-/bin/bash}")
-  case "$SHELL_NAME" in
-    zsh)  RC_FILE="$HOME/.zshrc";;
-    *)    RC_FILE="$HOME/.bashrc";;
-  esac
-  if ! grep -qF "$ENV_VAR" "$RC_FILE" 2>/dev/null; then
-    printf 'export %s=%q\n' "$ENV_VAR" "$RES" >> "$RC_FILE"
-    echo "  Added $ENV_VAR to $RC_FILE" >&2
+  # 8a. Optional env var setup (off by default)
+  if [[ "$SET_ENV" == true ]]; then
+    export "${ENV_VAR}=${RES}"
+    echo "  Set $ENV_VAR in current shell session" >&2
+
+    if [[ "$PERSIST_ENV" == true ]]; then
+      SHELL_NAME=$(basename "${SHELL:-/bin/bash}")
+      case "$SHELL_NAME" in
+        zsh)  RC_FILE="$HOME/.zshrc";;
+        *)    RC_FILE="$HOME/.bashrc";;
+      esac
+      if ! grep -qF "$ENV_VAR" "$RC_FILE" 2>/dev/null; then
+        printf 'export %s=%q\n' "$ENV_VAR" "$RES" >> "$RC_FILE"
+        echo "  Added $ENV_VAR to $RC_FILE" >&2
+      else
+        grep -v "^export ${ENV_VAR}=" "$RC_FILE" > "${RC_FILE}.tmp" && mv "${RC_FILE}.tmp" "$RC_FILE"
+        printf 'export %s=%q\n' "$ENV_VAR" "$RES" >> "$RC_FILE"
+        echo "  Updated $ENV_VAR in $RC_FILE" >&2
+      fi
+    fi
   else
-    grep -v "^export ${ENV_VAR}=" "$RC_FILE" > "${RC_FILE}.tmp" && mv "${RC_FILE}.tmp" "$RC_FILE"
-    printf 'export %s=%q\n' "$ENV_VAR" "$RES" >> "$RC_FILE"
-    echo "  Updated $ENV_VAR in $RC_FILE" >&2
+    echo "  Skipped env var setup (config uses provider.options.baseURL)" >&2
   fi
-  export "${ENV_VAR}=${RES}"
 
   # 8b. Merge into opencode.json
   if [[ -f "$CONFIG_PATH" ]]; then
@@ -231,11 +250,13 @@ else
   MERGED=$(echo "$EXISTING" | jq \
     --arg provider "$PROVIDER" \
     --arg disable "$DISABLE" \
+    --arg baseURL "$BASE_URL" \
     --argjson whitelist "$WHITELIST" \
     --argjson models "$CUSTOM_MODELS" \
   '
     .disabled_providers = ((.disabled_providers // []) + [$disable] | unique) |
     .provider[$provider] = {
+      "options": {"baseURL": $baseURL},
       "whitelist": $whitelist,
       "models": $models
     }
@@ -267,6 +288,8 @@ else
   unset API_KEY
 
   echo "" >&2
-  echo "DONE. Fully configured — restart OpenCode to pick up changes." >&2
-  echo "  Run: source $RC_FILE" >&2
+  echo "DONE. Fully configured -- restart OpenCode to pick up changes." >&2
+  if [[ "$PERSIST_ENV" == true ]]; then
+    echo "  Run: source $RC_FILE" >&2
+  fi
 fi

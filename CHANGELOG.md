@@ -6,6 +6,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ---
 
+## [0.1.2] — 2026-02-21
+
+### Security / Hardening
+
+- Fixed workflow-dispatch input injection risk in `.github/workflows/integration-smoke.yml` by using env-scoped inputs and quoted argument arrays.
+- Fixed PowerShell null-reference crashes when Azure deployment model metadata is missing (`properties.model.name`).
+- Made env-var persistence opt-in in setup scripts:
+  - bash: `--set-env` / `--persist-env`
+  - pwsh: `-SetEnv` / `-PersistEnv`
+- Default setup path now writes `provider.options.baseURL` so no env var is required.
+
+### Documentation / Transparency
+
+- Added `SECURITY.md` with threat model, defaults, and reporting guidance.
+- Added `LICENSE` (MIT) to match README license claim.
+- Added `checksums.txt` (SHA-256) for core setup scripts.
+- Updated `references/verify-endpoint.md` to use API version `2024-10-21` and safer curl key handling (`--config` stdin).
+- Updated dry-run outputs and docs to reflect no-env default and optional persistence.
+
 ## [0.1.1] — 2026-02-21
 
 ### Fixed
