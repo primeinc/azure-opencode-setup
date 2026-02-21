@@ -35,9 +35,13 @@ if [[ -z "$SUB" ]]; then
   echo "Scanning all subscriptions for AI resources..." >&2
   BEST_COUNT=0
   while IFS=$'\t' read -r sub_id sub_name; do
+    sub_id=${sub_id//$'\r'/}
+    sub_name=${sub_name//$'\r'/}
     while IFS=$'\t' read -r name rg; do
+      name=${name//$'\r'/}
+      rg=${rg//$'\r'/}
       count=$(az cognitiveservices account deployment list \
-        --subscription "$sub_id" -g "$rg" -n "$name" --query "length([])" -o tsv 2>/dev/null || echo 0)
+        --subscription "$sub_id" -g "$rg" -n "$name" -o json 2>/dev/null | jq 'length' || echo 0)
       echo "  $sub_name / $name ($rg): $count deployments" >&2
       if (( count > BEST_COUNT )); then
         BEST_COUNT=$count; SUB="$sub_id"; RES="$name"; RG="$rg"
@@ -57,7 +61,9 @@ if [[ -z "$RES" ]]; then
   echo "Scanning subscription for AI resources..." >&2
   BEST_COUNT=0
   while IFS=$'\t' read -r name rg; do
-    count=$(az cognitiveservices account deployment list -g "$rg" -n "$name" --query "length([])" -o tsv 2>/dev/null || echo 0)
+    name=${name//$'\r'/}
+    rg=${rg//$'\r'/}
+    count=$(az cognitiveservices account deployment list -g "$rg" -n "$name" -o json 2>/dev/null | jq 'length' || echo 0)
     echo "  $name ($rg): $count deployments" >&2
     if (( count > BEST_COUNT )); then
       BEST_COUNT=$count; RES="$name"; RG="$rg"
@@ -135,11 +141,18 @@ TEST_DEPLOY=$(echo "$DEPLOY_JSON" | jq -r '[.[] | select(.name | test("^gpt"))][
 echo "" >&2
 echo "Verifying endpoint with deployment '$TEST_DEPLOY'..." >&2
 VERIFY_URL="${ENDPOINT}openai/deployments/${TEST_DEPLOY}/chat/completions?api-version=2024-10-21"
-# Pass API key via --config stdin to avoid exposing it in process list
+# Pass API key via temp --config file to avoid exposing it in process list.
+# Process substitution (<(...)) is not reliable on all bash/curl combinations.
+VERIFY_CFG=$(mktemp)
+chmod 600 "$VERIFY_CFG"
+printf 'header = "api-key: %s"\n' "$API_KEY" > "$VERIFY_CFG"
+trap 'rm -f "$VERIFY_CFG"' EXIT
 VERIFY_RESP=$(curl -sS -w "\n%{http_code}" "$VERIFY_URL" \
-  --config <(printf 'header = "api-key: %s"\n' "$API_KEY") \
+  --config "$VERIFY_CFG" \
   -H "Content-Type: application/json" \
   -d '{"messages":[{"role":"user","content":"Say ok"}],"max_tokens":5}' 2>&1)
+rm -f "$VERIFY_CFG"
+trap - EXIT
 HTTP_CODE=$(echo "$VERIFY_RESP" | tail -1)
 BODY=$(echo "$VERIFY_RESP" | sed '$d')
 if [[ "$HTTP_CODE" == "200" ]]; then

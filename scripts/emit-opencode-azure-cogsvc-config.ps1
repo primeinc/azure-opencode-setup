@@ -33,7 +33,7 @@ param(
   [switch]$VerifyOnly,
   [switch]$SetEnv,
   [switch]$PersistEnv,
-  [string]$ConfigPath = (Join-Path $env:APPDATA "opencode\opencode.json")
+  [string]$ConfigPath = (Join-Path $HOME ".config\opencode\opencode.json")
 )
 $ErrorActionPreference = "Stop"
 
@@ -306,13 +306,16 @@ if (-not $Apply) {
   }
   $existing.provider | Add-Member -NotePropertyName $Provider -NotePropertyValue $providerObj -Force
 
-  $existing | ConvertTo-Json -Depth 10 | Set-Content $ConfigPath -Encoding UTF8
+  # Write UTF-8 without BOM — Set-Content -Encoding UTF8 emits BOM on PS 5.1
+  $configDir = Split-Path $ConfigPath
+  if (-not (Test-Path $configDir)) { New-Item -Path $configDir -ItemType Directory -Force | Out-Null }
+  [System.IO.File]::WriteAllText($ConfigPath, ($existing | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
   Write-Host "  Written to $ConfigPath" -ForegroundColor Green
 
   # 8c. Write API key to auth.json (same format as /connect writes)
-  # Path: %LOCALAPPDATA%\opencode\auth.json
-  # Source: xdg-basedir on Windows resolves data dir to %LOCALAPPDATA% (global/index.ts)
-  $authPath = Join-Path $env:LOCALAPPDATA "opencode\auth.json"
+  # Path: $HOME\.local\share\opencode\auth.json
+  # Source: opencode docs — Windows storage location is %USERPROFILE%\.local\share\opencode
+  $authPath = Join-Path $HOME ".local\share\opencode\auth.json"
   $authDir = Split-Path $authPath
   if (-not (Test-Path $authDir)) { New-Item -Path $authDir -ItemType Directory -Force | Out-Null }
   if (Test-Path $authPath) {
@@ -325,7 +328,8 @@ if (-not $Apply) {
     type = "api"
     key  = $ApiKey
   }) -Force
-  $authJson | ConvertTo-Json -Depth 4 | Set-Content $authPath -Encoding UTF8
+  # Write UTF-8 without BOM — Set-Content -Encoding UTF8 emits BOM on PS 5.1
+  [System.IO.File]::WriteAllText($authPath, ($authJson | ConvertTo-Json -Depth 4), [System.Text.UTF8Encoding]::new($false))
   # Restrict auth.json to current user only (equivalent of bash chmod 600)
   # Pattern from: https://learn.microsoft.com/en-us/dotnet/api/system.security.accesscontrol.filesystemaccessrule.-ctor
   # Restrict auth.json to current user only (chmod 600 equivalent).
