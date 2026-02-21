@@ -144,15 +144,26 @@ $testDeployment = ($deployments | Where-Object { $_.name -match '^gpt' } | Selec
 if (-not $testDeployment) { $testDeployment = $deployments[0].name }
 
 Write-Host "`nVerifying endpoint with deployment '$testDeployment'..." -ForegroundColor Yellow
+$testUrl = "${Endpoint}openai/deployments/$testDeployment/chat/completions?api-version=2024-12-01-preview"
 try {
-  $testUrl = "${Endpoint}openai/deployments/$testDeployment/chat/completions?api-version=2024-12-01-preview"
-  $resp = Invoke-RestMethod -Uri $testUrl -Method Post `
+  # Invoke-WebRequest keeps key in-memory (.NET call, not visible in process list)
+  $resp = Invoke-WebRequest -Uri $testUrl -Method Post `
     -Headers @{"api-key"=$ApiKey} -ContentType "application/json" `
-    -Body '{"messages":[{"role":"user","content":"Say ok"}],"max_tokens":5}'
-  Write-Host "Endpoint verified: $($resp.choices[0].message.content)" -ForegroundColor Green
+    -Body '{"messages":[{"role":"user","content":"Say ok"}],"max_tokens":5}' `
+    -UseBasicParsing -ErrorAction Stop
+  Write-Host "Endpoint verified (HTTP $($resp.StatusCode))" -ForegroundColor Green
 } catch {
-  Write-Host "WARNING: Endpoint verification failed: $($_.Exception.Message)" -ForegroundColor Red
-  Write-Host "Config will still be generated. Check troubleshooting docs." -ForegroundColor Yellow
+  $sc = $null; $errMsg = $null
+  try {
+    $sc = [int]$_.Exception.Response.StatusCode
+    $sr = [System.IO.StreamReader]::new($_.Exception.Response.GetResponseStream())
+    $errMsg = ($sr.ReadToEnd() | ConvertFrom-Json).error.message
+    $sr.Dispose()
+  } catch {}
+  $label = if ($sc) { "HTTP $sc" } else { "connection error" }
+  Write-Host "WARNING: Endpoint verification failed ($label)" -ForegroundColor Red
+  if ($errMsg) { Write-Host "  $errMsg" -ForegroundColor Red }
+  Write-Host "  Config will still be generated." -ForegroundColor Yellow
 }
 
 # ── Step 8: Build output ─────────────────────────────────────────────────────
@@ -213,12 +224,26 @@ if (-not $Apply) {
   $existing | ConvertTo-Json -Depth 10 | Set-Content $ConfigPath -Encoding UTF8
   Write-Host "  Written to $ConfigPath" -ForegroundColor Green
 
-  # 8c. Print remaining manual step
-  Write-Host "`nDONE. One manual step remains:" -ForegroundColor Green
-  Write-Host "  1. Open OpenCode" -ForegroundColor White
-  Write-Host "  2. Run /connect -> select '$Provider'" -ForegroundColor White
-  Write-Host "  3. Paste this API key:" -ForegroundColor White
-  Write-Host "     $ApiKey" -ForegroundColor Cyan
-  Write-Host "`n  Or copy it from:" -ForegroundColor Gray
-  Write-Host "     az cognitiveservices account keys list -g $ResourceGroup -n $Resource --query key1 -o tsv" -ForegroundColor Gray
+  # 8c. Write API key to auth.json (same format as /connect writes)
+  # Path: ~/.local/share/opencode/auth.json [OPENCODE-NORMATIVE: troubleshooting.mdx]
+  $authPath = Join-Path $env:USERPROFILE ".local\share\opencode\auth.json"
+  $authDir = Split-Path $authPath
+  if (-not (Test-Path $authDir)) { New-Item -Path $authDir -ItemType Directory -Force | Out-Null }
+  if (Test-Path $authPath) {
+    $authJson = Get-Content $authPath -Raw | ConvertFrom-Json
+  } else {
+    $authJson = [PSCustomObject]@{}
+  }
+  # Format: { "<provider>": { "type": "api", "key": "<key>" } } [OPENCODE-NORMATIVE: sdk.mdx auth.set]
+  $authJson | Add-Member -NotePropertyName $Provider -NotePropertyValue ([PSCustomObject]@{
+    type = "api"
+    key  = $ApiKey
+  }) -Force
+  $authJson | ConvertTo-Json -Depth 4 | Set-Content $authPath -Encoding UTF8
+  Write-Host "  API key written to $authPath" -ForegroundColor Green
+
+  # Clear key from memory
+  Remove-Variable ApiKey -ErrorAction SilentlyContinue
+
+  Write-Host "`nDONE. Fully configured — restart OpenCode to pick up changes." -ForegroundColor Green
 }

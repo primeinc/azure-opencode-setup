@@ -118,14 +118,21 @@ TEST_DEPLOY=$(echo "$DEPLOY_JSON" | jq -r '[.[] | select(.name | test("^gpt"))][
 echo "" >&2
 echo "Verifying endpoint with deployment '$TEST_DEPLOY'..." >&2
 VERIFY_URL="${ENDPOINT}openai/deployments/${TEST_DEPLOY}/chat/completions?api-version=2024-12-01-preview"
-VERIFY_RESP=$(curl -s -w "\n%{http_code}" "$VERIFY_URL" \
-  -H "api-key: ${API_KEY}" -H "Content-Type: application/json" \
-  -d '{"messages":[{"role":"user","content":"Say ok"}],"max_tokens":5}')
+# Pass API key via --config stdin to avoid exposing it in process list
+VERIFY_RESP=$(curl -sS -w "\n%{http_code}" "$VERIFY_URL" \
+  --config <(printf 'header = "api-key: %s"\n' "$API_KEY") \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"Say ok"}],"max_tokens":5}' 2>&1)
 HTTP_CODE=$(echo "$VERIFY_RESP" | tail -1)
+BODY=$(echo "$VERIFY_RESP" | sed '$d')
 if [[ "$HTTP_CODE" == "200" ]]; then
   echo "Endpoint verified (HTTP 200)" >&2
 else
-  echo "WARNING: Endpoint returned HTTP $HTTP_CODE. Config will still be generated." >&2
+  echo "WARNING: Endpoint returned HTTP $HTTP_CODE" >&2
+  # Show Azure error message if present (strip API key from any error output)
+  ERR_MSG=$(echo "$BODY" | jq -r '.error.message // empty' 2>/dev/null)
+  [[ -n "$ERR_MSG" ]] && echo "  Error: $ERR_MSG" >&2
+  echo "  Config will still be generated. Check troubleshooting docs." >&2
 fi
 
 # ── Step 8: Build output ─────────────────────────────────────────────────────
@@ -197,12 +204,29 @@ else
   echo "$MERGED" > "$CONFIG_PATH"
   echo "  Written to $CONFIG_PATH" >&2
 
-  # 8c. Print remaining manual step
+  # 8c. Write API key to auth.json (same format as /connect writes)
+  # Path: ~/.local/share/opencode/auth.json [OPENCODE-NORMATIVE: troubleshooting.mdx]
+  AUTH_PATH="${HOME}/.local/share/opencode/auth.json"
+  mkdir -p "$(dirname "$AUTH_PATH")"
+  if [[ -f "$AUTH_PATH" ]]; then
+    AUTH_JSON=$(cat "$AUTH_PATH")
+  else
+    AUTH_JSON='{}'
+  fi
+  # Format: { "<provider>": { "type": "api", "key": "<key>" } } [OPENCODE-NORMATIVE: sdk.mdx auth.set]
+  # Atomic write (tmp + mv) to prevent corruption on interrupt
+  echo "$AUTH_JSON" | jq \
+    --arg provider "$PROVIDER" \
+    --arg key "$API_KEY" \
+    '.[$provider] = {"type": "api", "key": $key}' > "${AUTH_PATH}.tmp"
+  mv "${AUTH_PATH}.tmp" "$AUTH_PATH"
+  chmod 600 "$AUTH_PATH"
+  echo "  API key written to $AUTH_PATH" >&2
+
+  # Clear key from memory
+  unset API_KEY
+
   echo "" >&2
-  echo "DONE. One manual step remains:" >&2
-  echo "  1. Open OpenCode" >&2
-  echo "  2. Run /connect -> select '$PROVIDER'" >&2
-  echo "  3. Paste this API key: $API_KEY" >&2
-  echo "" >&2
-  echo "  Then: source $RC_FILE" >&2
+  echo "DONE. Fully configured — restart OpenCode to pick up changes." >&2
+  echo "  Run: source $RC_FILE" >&2
 fi

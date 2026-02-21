@@ -39,9 +39,9 @@ What the script does (in order):
 1. Scans subscriptions → finds AI resources → picks the one with most deployments
 2. Lists deployments → builds whitelist (deployment names + model names when they differ)
 3. Verifies endpoint with a live API call
-4. With `-Apply`: merges config into `opencode.json`, sets env var persistently, prints the API key for `/connect`
+4. With `-Apply`: merges config into `opencode.json`, sets env var persistently, writes API key to `auth.json`
 
-Only manual step after `-Apply`: run `/connect` in OpenCode and paste the API key.
+With `-Apply`, there are zero manual steps. The script writes directly to `auth.json` (same location `/connect` uses). Restart OpenCode to pick up changes.
 
 ## Manual path
 
@@ -51,7 +51,7 @@ Only manual step after `-Apply`: run `/connect` in OpenCode and paste the API ke
 | 2 | Match endpoint → provider | Table below |
 | 3 | Verify endpoint | `references/verify-endpoint.md` |
 | 4 | Set env var (persistent) | Platform commands below |
-| 5 | `/connect` in OpenCode | Paste API key (stored in `auth.json`, NOT env var) |
+| 5 | API key stored | `-Apply` writes to `auth.json` directly. Manual path: `/connect` in OpenCode. |
 | 6 | Configure `opencode.json` | Whitelist + disabled_providers |
 | 7 | Validate quota | `references/quota-validation.md` |
 
@@ -66,7 +66,7 @@ Source of truth: `az cognitiveservices account show -g <RG> -n <RES> --query pro
 
 ### Set env var (persistent) [PROPOSED]
 
-The env var holds the **resource name only**. API key goes through `/connect`.
+The env var holds the **resource name only**. API key is stored in `~/.local/share/opencode/auth.json` (written by `-Apply` or `/connect`).
 
 **Windows (PowerShell):**
 ```powershell
