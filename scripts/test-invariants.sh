@@ -206,16 +206,47 @@ else
   fail "INV-07b" "APPDATA not found for opencode.json — may have reverted to ~/.config"
 fi
 
-# ── INV-08: .sh sets chmod 600 on auth.json ──────────────────────────────────
-# Contract: Bun.write mode:0o600 is Unix-only; .sh must explicitly chmod 600.
+# ── INV-08: .sh sets chmod 600 on auth.json (proximity check) ────────────────
+# Contract: Bun.write mode:0o600 is Unix-only; .sh must explicitly chmod 600
+# within 5 lines of the mv-into-place write — not somewhere arbitrary in the
+# file. A chmod 600 elsewhere (e.g. on a different file) would pass a naive
+# grep but not enforce the contract.
 
 echo ""
-echo "INV-08  .sh sets chmod 600 on auth.json"
+echo "INV-08  .sh sets chmod 600 adjacent to auth.json write"
 
-if grep -qE 'chmod\s+600' "$SH_SCRIPT"; then
-  pass "INV-08  chmod 600 present in $(basename "$SH_SCRIPT")"
+if grep -n "chmod 600" "$SH_SCRIPT" | while IFS=: read -r CMOD_LINE _; do
+    # Find nearest mv/write to AUTH_PATH within 5 lines before chmod 600
+    START=$(( CMOD_LINE > 5 ? CMOD_LINE - 5 : 1 ))
+    sed -n "${START},${CMOD_LINE}p" "$SH_SCRIPT" | grep -qE 'mv.*AUTH_PATH|AUTH_PATH.*mv|mv.*auth\.json|write.*auth'
+  done; then
+  pass "INV-08  chmod 600 adjacent to auth.json write in $(basename "$SH_SCRIPT")"
 else
-  fail "INV-08" "chmod 600 not found for auth.json in $(basename "$SH_SCRIPT")"
+  fail "INV-08" "chmod 600 not found within 5 lines of auth.json mv/write in $(basename "$SH_SCRIPT")"
+fi
+
+# ── INV-09: vendored snapshot is self-consistent (content_hash matches data) ──
+# Contract: _meta.content_hash must equal sha256[:16] of content fields.
+# Catches manual edits to the snapshot that forgot to recompute the hash.
+
+echo ""
+echo "INV-09  models.dev.azure.json content_hash self-consistency"
+
+STORED_HASH=$(jq -r '._meta.content_hash // empty' "$SNAPSHOT")
+if [[ -z "$STORED_HASH" ]]; then
+  fail "INV-09" "no _meta.content_hash in snapshot — run refresh-models-snapshot.yml"
+else
+  COMPUTED_HASH=$(jq -c 'del(._meta)' "$SNAPSHOT" | python3 -c "
+import sys, json, hashlib
+data = json.loads(sys.stdin.read())
+h = hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()[:16]
+print(h)
+")
+  if [[ "$STORED_HASH" == "$COMPUTED_HASH" ]]; then
+    pass "INV-09  content_hash $STORED_HASH matches recomputed hash"
+  else
+    fail "INV-09" "content_hash mismatch: stored=$STORED_HASH computed=$COMPUTED_HASH — snapshot was edited without recomputing hash"
+  fi
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────

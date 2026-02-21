@@ -11,7 +11,7 @@
 #   ./emit-opencode-azure-cogsvc-config.sh --subscription <id> --apply
 set -euo pipefail
 
-SUB="" RES="" RG="" APPLY=false
+SUB="" RES="" RG="" APPLY=false SMOKE=false
 CONFIG_PATH="${HOME}/.config/opencode/opencode.json"
 
 while [[ $# -gt 0 ]]; do
@@ -21,6 +21,7 @@ while [[ $# -gt 0 ]]; do
     --rg)           RG="$2";  shift 2;;
     --apply)        APPLY=true; shift;;
     --config)       CONFIG_PATH="$2"; shift 2;;
+    --smoke)        SMOKE=true; shift;;
     *) echo "Unknown arg: $1" >&2; exit 2;;
   esac
 done
@@ -162,6 +163,33 @@ CONFIG_BLOCK=$(jq -n \
     }
   }
 }')
+
+if [[ "$SMOKE" == true ]]; then
+  # ── Smoke mode: validate az login, endpoint, deployments, one live call ──────
+  # Exits 0 on full success, non-zero on any failure. Writes nothing to disk.
+  echo "" >&2
+  echo "SMOKE: az login" >&2
+  az account show --query "id" -o tsv >/dev/null || { echo "SMOKE FAIL: not logged in to az" >&2; exit 10; }
+  echo "SMOKE PASS: az authenticated" >&2
+
+  echo "SMOKE: endpoint" >&2
+  [[ -n "$ENDPOINT" ]] || { echo "SMOKE FAIL: no endpoint resolved" >&2; exit 11; }
+  echo "SMOKE PASS: endpoint=$ENDPOINT" >&2
+
+  echo "SMOKE: deployments ($DEPLOY_COUNT found)" >&2
+  (( DEPLOY_COUNT > 0 )) || { echo "SMOKE FAIL: no deployments" >&2; exit 12; }
+  echo "SMOKE PASS: $DEPLOY_COUNT deployment(s) found" >&2
+
+  echo "SMOKE: live chat/completions call to '$TEST_DEPLOY'" >&2
+  if [[ "$HTTP_CODE" == "200" ]]; then
+    echo "SMOKE PASS: HTTP 200 from $VERIFY_URL" >&2
+    exit 0
+  else
+    echo "SMOKE FAIL: HTTP $HTTP_CODE from $VERIFY_URL" >&2
+    [[ -n "${ERR_MSG:-}" ]] && echo "  Azure error: $ERR_MSG" >&2
+    exit 13
+  fi
+fi
 
 if [[ "$APPLY" == false ]]; then
   echo "" >&2

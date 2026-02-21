@@ -24,6 +24,7 @@ param(
   [string]$Resource,
   [string]$ResourceGroup,
   [switch]$Apply,
+  [switch]$VerifyOnly,
   [string]$ConfigPath = (Join-Path $env:APPDATA "opencode\opencode.json")
 )
 $ErrorActionPreference = "Stop"
@@ -191,6 +192,49 @@ $providerBlock = @{
 }
 
 $json = $providerBlock | ConvertTo-Json -Depth 6
+
+if ($VerifyOnly) {
+  # ── Smoke / VerifyOnly mode: validate az login, endpoint, deployments, one live call ──
+  # Exits 0 on full success, non-zero on any failure. Writes nothing to disk.
+  Write-Host "`nSMOKE: az login" -ForegroundColor Yellow
+  try {
+    az account show --query "id" -o tsv | Out-Null
+    Write-Host "SMOKE PASS: az authenticated" -ForegroundColor Green
+  } catch {
+    Write-Host "SMOKE FAIL: not logged in to az" -ForegroundColor Red; exit 10
+  }
+
+  Write-Host "SMOKE: endpoint" -ForegroundColor Yellow
+  if (-not $Endpoint) { Write-Host "SMOKE FAIL: no endpoint resolved" -ForegroundColor Red; exit 11 }
+  Write-Host "SMOKE PASS: endpoint=$Endpoint" -ForegroundColor Green
+
+  Write-Host "SMOKE: deployments ($($deployments.Count) found)" -ForegroundColor Yellow
+  if ($deployments.Count -eq 0) { Write-Host "SMOKE FAIL: no deployments" -ForegroundColor Red; exit 12 }
+  Write-Host "SMOKE PASS: $($deployments.Count) deployment(s) found" -ForegroundColor Green
+
+  Write-Host "SMOKE: live chat/completions call to '$testDeployment'" -ForegroundColor Yellow
+  $smokeUrl = "${Endpoint}openai/deployments/$testDeployment/chat/completions?api-version=2024-10-21"
+  try {
+    $smokeResp = Invoke-WebRequest -Uri $smokeUrl -Method Post `
+      -Headers @{"api-key"=$ApiKey} -ContentType "application/json" `
+      -Body '{"messages":[{"role":"user","content":"Say ok"}],"max_tokens":5}' `
+      -UseBasicParsing -ErrorAction Stop
+    Write-Host "SMOKE PASS: HTTP $($smokeResp.StatusCode) from $smokeUrl" -ForegroundColor Green
+    Remove-Variable ApiKey -ErrorAction SilentlyContinue
+    exit 0
+  } catch {
+    $sc = try { [int]$_.Exception.Response.StatusCode } catch { "unknown" }
+    Write-Host "SMOKE FAIL: HTTP $sc from $smokeUrl" -ForegroundColor Red
+    try {
+      $sr = [System.IO.StreamReader]::new($_.Exception.Response.GetResponseStream())
+      $errMsg = ($sr.ReadToEnd() | ConvertFrom-Json).error.message
+      $sr.Dispose()
+      if ($errMsg) { Write-Host "  Azure error: $errMsg" -ForegroundColor Red }
+    } catch {}
+    Remove-Variable ApiKey -ErrorAction SilentlyContinue
+    exit 13
+  }
+}
 
 if (-not $Apply) {
   # Dry run: print instructions + JSON
