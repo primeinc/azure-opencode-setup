@@ -4,16 +4,21 @@ Connect Azure AI Services models to [OpenCode](https://opencode.ai/) in minutes.
 
 ## What it does
 
-Run one script → get a ready-to-paste `opencode.json` config block:
+Run one script with zero args → get a fully configured OpenCode:
 
 ```powershell
-.\scripts\emit-opencode-azure-cogsvc-config.ps1 -Subscription "<SUB_ID>" -Resource "<RESOURCE>"
+# Dry run: prints what it would do
+.\scripts\emit-opencode-azure-cogsvc-config.ps1
+
+# Apply: writes opencode.json, sets env var, verifies endpoint
+.\scripts\emit-opencode-azure-cogsvc-config.ps1 -Apply
 ```
 ```bash
-./scripts/emit-opencode-azure-cogsvc-config.sh --subscription "<SUB_ID>" --resource "<RESOURCE>"
+./scripts/emit-opencode-azure-cogsvc-config.sh           # dry run
+./scripts/emit-opencode-azure-cogsvc-config.sh --apply    # apply
 ```
 
-The script discovers your Azure AI Services resource, lists all deployments, normalizes names (handles deployment ≠ model name mismatches like `kimi-k2` → `Kimi-K2-Thinking`), and prints JSON you paste directly into `opencode.json`.
+The script scans all Azure subscriptions, finds AI resources, picks the one with the most deployments, normalizes names (handles deployment ≠ model name mismatches like `kimi-k2` → `Kimi-K2-Thinking`), verifies the endpoint, and writes the config. Only manual step: `/connect` in OpenCode to paste the API key.
 
 ## Install
 

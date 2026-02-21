@@ -16,20 +16,32 @@ compatibility: Requires az CLI authenticated, OpenCode installed
 
 ## Quick path (one command)
 
-Run the automation script. It discovers deployments and emits a ready-to-paste config block:
+Run the automation script. All params optional — with zero args it scans every subscription and picks the resource with the most deployments:
 
 ```powershell
-# PowerShell
-.\scripts\emit-opencode-azure-cogsvc-config.ps1 -Subscription "<SUB_ID>" -Resource "<RESOURCE>"
+# PowerShell — dry run (prints JSON, changes nothing)
+.\scripts\emit-opencode-azure-cogsvc-config.ps1
+
+# PowerShell — apply (writes opencode.json, sets env var, verifies endpoint)
+.\scripts\emit-opencode-azure-cogsvc-config.ps1 -Apply
+
+# Target a specific resource
+.\scripts\emit-opencode-azure-cogsvc-config.ps1 -Subscription "<SUB_ID>" -Resource "<RESOURCE>" -Apply
 ```
 ```bash
-# Bash (requires jq)
-./scripts/emit-opencode-azure-cogsvc-config.sh --subscription "<SUB_ID>" --resource "<RESOURCE>"
+# Bash (requires jq) — same flags
+./scripts/emit-opencode-azure-cogsvc-config.sh                    # dry run
+./scripts/emit-opencode-azure-cogsvc-config.sh --apply            # apply
+./scripts/emit-opencode-azure-cogsvc-config.sh --subscription "<SUB_ID>" --resource "<RESOURCE>" --apply
 ```
 
-Omit `--resource` to auto-pick the resource with most deployments. Script warns if multiple resources exist.
+What the script does (in order):
+1. Scans subscriptions → finds AI resources → picks the one with most deployments
+2. Lists deployments → builds whitelist (deployment names + model names when they differ)
+3. Verifies endpoint with a live API call
+4. With `-Apply`: merges config into `opencode.json`, sets env var persistently, prints the API key for `/connect`
 
-Paste the JSON output into `opencode.json`. Then run `/connect` in OpenCode to store the API key.
+Only manual step after `-Apply`: run `/connect` in OpenCode and paste the API key.
 
 ## Manual path
 
