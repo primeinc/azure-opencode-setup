@@ -6,6 +6,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ---
 
+## [0.1.1] — 2026-02-21
+
+### Fixed
+
+- PowerShell 5.1 compatibility in `scripts/emit-opencode-azure-cogsvc-config.ps1`:
+  - added `#Requires -Version 5.1`
+  - converted non-ASCII punctuation/box-drawing characters to ASCII
+  - saved file as UTF-8 with BOM to avoid PS5.1 parser mojibake
+- CI execution path reliability:
+  - explicit `working-directory: ${{ github.workspace }}` in workflow jobs
+  - explicit `bash scripts/...` invocation for shell scripts
+  - explicit Windows script path resolution via `Join-Path $env:GITHUB_WORKSPACE ...`
+
+### Changed
+
+- Added `CONTRIBUTING.md` with canonical local/CI invocation patterns, shell usage rules, and PS encoding guidance.
+- `integration-smoke.yml` now self-skips when Azure credentials are not configured, so it remains optional and non-blocking.
+
+### CI
+
+- Validate workflow now supports manual re-run via `workflow_dispatch`.
+
 ## [0.1.0] — 2026-02-21
 
 ### Added
