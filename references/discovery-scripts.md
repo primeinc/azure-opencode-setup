@@ -116,19 +116,13 @@ az cognitiveservices account deployment list \
   awk '{printf "\"%s\", ", $0}' | sed 's/, $//'
 ```
 
-## Check resource across multiple resources (pick the richest one)
-
-Useful when you have multiple AI Services resources and want to find which has the most deployments:
-
-### PowerShell
+## Pick the resource with most deployments
 
 ```powershell
 $accounts = az cognitiveservices account list `
   --query "[?kind=='AIServices' || kind=='OpenAI'].{name:name, rg:resourceGroup}" -o json | ConvertFrom-Json
-
-foreach ($acct in $accounts) {
-  $count = (az cognitiveservices account deployment list `
-    -g $acct.rg -n $acct.name --query "length([])" -o tsv 2>$null)
-  Write-Host "$($acct.name): $count deployments"
+foreach ($a in $accounts) {
+  $c = az cognitiveservices account deployment list -g $a.rg -n $a.name --query "length([])" -o tsv 2>$null
+  Write-Host "$($a.name): $c deployments"
 }
 ```
