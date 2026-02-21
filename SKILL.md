@@ -128,3 +128,7 @@ See [config template and whitelist rules](references/config-template.md#self-che
 ## Troubleshooting
 
 See [troubleshooting](references/troubleshooting.md) — covers 404, 401, wrong endpoint, catalog still showing, quota exceeded, deployment/model name mismatch.
+
+## Implementation contracts
+
+See [contracts](references/contracts.md) — named invariants for whitelist casing, Windows paths, YAML shell patterns, and ACL implementation.
