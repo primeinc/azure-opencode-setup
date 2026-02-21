@@ -1,3 +1,4 @@
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   Discovers Azure AI Services deployments and emits/applies an opencode.json provider block.
@@ -29,7 +30,7 @@ param(
 )
 $ErrorActionPreference = "Stop"
 
-# ── Step 1: Find subscription ──────────────────────────────────────────────────
+# -- Step 1: Find subscription --------------------------------------------------
 if (-not $Subscription) {
   Write-Host "Scanning all subscriptions for AI resources..." -ForegroundColor Yellow
   $subs = az account list --query "[].{id:id, name:name}" -o json | ConvertFrom-Json
@@ -64,7 +65,7 @@ if (-not $Subscription) {
 
 az account set --subscription $Subscription | Out-Null
 
-# ── Step 2: Find resource (if subscription given but resource not) ─────────────
+# -- Step 2: Find resource (if subscription given but resource not) -------------
 if (-not $Resource) {
   Write-Host "Scanning subscription for AI resources..." -ForegroundColor Yellow
   $accounts = az cognitiveservices account list `
@@ -84,17 +85,17 @@ if (-not $Resource) {
   Write-Host "Selected: $Resource ($bestCount deployments)" -ForegroundColor Green
 }
 
-# ── Step 3: Resolve resource group ────────────────────────────────────────────
+# -- Step 3: Resolve resource group --------------------------------------------
 if (-not $ResourceGroup) {
   $ResourceGroup = az resource list --name $Resource --resource-type "Microsoft.CognitiveServices/accounts" `
     --query "[0].resourceGroup" -o tsv
 }
 if (-not $ResourceGroup) { throw "Could not find resource group for '$Resource'" }
 
-# ── Step 4: Get endpoint + determine provider [MICROSOFT-NORMATIVE] ──────────
+# -- Step 4: Get endpoint + determine provider [MICROSOFT-NORMATIVE] ----------
 $Endpoint = az cognitiveservices account show -g $ResourceGroup -n $Resource --query "properties.endpoint" -o tsv
 if (-not $Endpoint) { throw "No endpoint for $Resource" }
-# ARM spec: properties.endpoint may or may not include trailing slash — normalise
+# ARM spec: properties.endpoint may or may not include trailing slash -- normalise
 if (-not $Endpoint.EndsWith('/')) { $Endpoint = "$Endpoint/" }
 
 if ($Endpoint -match 'cognitiveservices\.azure\.com') {
@@ -109,7 +110,7 @@ if ($Endpoint -match 'cognitiveservices\.azure\.com') {
   throw "Unrecognized endpoint pattern: $Endpoint"
 }
 
-# ── Step 5: List deployments [MICROSOFT-NORMATIVE: deployment name is truth] ──
+# -- Step 5: List deployments [MICROSOFT-NORMATIVE: deployment name is truth] --
 $deployments = az cognitiveservices account deployment list -g $ResourceGroup -n $Resource -o json | ConvertFrom-Json
 
 if ($deployments.Count -eq 0) {
@@ -123,9 +124,9 @@ foreach ($d in $deployments) {
   Write-Host "  $dep$mismatch" -ForegroundColor Gray
 }
 
-# ── Step 6: Build whitelist + models block ────────────────────────────────────
+# -- Step 6: Build whitelist + models block ------------------------------------
 # LOWERCASE CONTRACT: OpenCode's whitelist check (provider.ts) uses
-# Array.includes() — case-sensitive, no normalization. models.dev emits all
+# Array.includes() -- case-sensitive, no normalization. models.dev emits all
 # Azure model IDs in lowercase (gpt-4o, o1, phi-4, etc.). Azure deployment
 # names are user-defined and may be mixed-case. .ToLower() normalizes both
 # so whitelist entries always match what OpenCode looks up.
@@ -152,7 +153,7 @@ foreach ($d in $deployments) {
   }
 }
 
-# ── Step 7: Verify endpoint ──────────────────────────────────────────────────
+# -- Step 7: Verify endpoint --------------------------------------------------
 $ApiKey = az cognitiveservices account keys list -g $ResourceGroup -n $Resource --query "key1" -o tsv
 $testDeployment = ($deployments | Where-Object { $_.name -match '^gpt' } | Select-Object -First 1).name
 if (-not $testDeployment) { $testDeployment = $deployments[0].name }
@@ -180,7 +181,7 @@ try {
   Write-Host "  Config will still be generated." -ForegroundColor Yellow
 }
 
-# ── Step 8: Build output ─────────────────────────────────────────────────────
+# -- Step 8: Build output -----------------------------------------------------
 $providerBlock = @{
   disabled_providers = @($Disable)
   provider = @{
@@ -194,7 +195,7 @@ $providerBlock = @{
 $json = $providerBlock | ConvertTo-Json -Depth 6
 
 if ($VerifyOnly) {
-  # ── Smoke / VerifyOnly mode: validate az login, endpoint, deployments, one live call ──
+  # -- Smoke / VerifyOnly mode: validate az login, endpoint, deployments, one live call --
   # Exits 0 on full success, non-zero on any failure. Writes nothing to disk.
   Write-Host "`nSMOKE: az login" -ForegroundColor Yellow
   try {
@@ -245,7 +246,7 @@ if (-not $Apply) {
   Write-Host ""
   Write-Output $json
 } else {
-  # ── Apply: merge into opencode.json ─────────────────────────────────────
+  # -- Apply: merge into opencode.json -------------------------------------
   Write-Host "`nApplying configuration..." -ForegroundColor Yellow
 
   # 8a. Set env var persistently
@@ -302,14 +303,14 @@ if (-not $Apply) {
   # Pattern from: https://learn.microsoft.com/en-us/dotnet/api/system.security.accesscontrol.filesystemaccessrule.-ctor
   # Restrict auth.json to current user only (chmod 600 equivalent).
   # Strategy: ResetAccessRule atomically removes ALL existing ACEs (explicit + inherited-converted)
-  # then adds exactly one rule — no loop, no iteration-while-modifying hazard.
+  # then adds exactly one rule -- no loop, no iteration-while-modifying hazard.
   # SetAccessRuleProtection($true, $false) disables inheritance and drops inherited ACEs first,
   # so ResetAccessRule only has to deal with whatever explicit ACEs remain.
   # Refs:
   #   SetAccessRuleProtection: learn.microsoft.com/dotnet/api/system.security.accesscontrol.objectsecurity.setaccessruleprotection
   #   ResetAccessRule: learn.microsoft.com/dotnet/api/system.security.accesscontrol.commonobjectsecurity.resetaccessrule
   $acl = Get-Acl -LiteralPath $authPath
-  $acl.SetAccessRuleProtection($true, $false)  # isProtected=true, preserveInheritance=false → strips inherited ACEs
+  $acl.SetAccessRuleProtection($true, $false)  # isProtected=true, preserveInheritance=false -> strips inherited ACEs
   $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
   $rule = New-Object System.Security.AccessControl.FileSystemAccessRule -ArgumentList @(
       $currentUser,
@@ -325,5 +326,5 @@ if (-not $Apply) {
   # Clear key from memory
   Remove-Variable ApiKey -ErrorAction SilentlyContinue
 
-  Write-Host "`nDONE. Fully configured — restart OpenCode to pick up changes." -ForegroundColor Green
+  Write-Host "`nDONE. Fully configured -- restart OpenCode to pick up changes." -ForegroundColor Green
 }
