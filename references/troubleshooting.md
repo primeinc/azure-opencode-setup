@@ -62,6 +62,29 @@ Some Azure model deployments don't support all parameters that OpenCode sends.
 
 Reference: [GH #12113](https://github.com/anomalyco/opencode/issues/12113), [GH #12121](https://github.com/anomalyco/opencode/issues/12121)
 
-## Case sensitivity
+## Case sensitivity / deployment-model name mismatch
 
-Azure deployment names are **case-insensitive** in API calls. `DeepSeek-V3.2` and `deepseek-v3.2` resolve to the same deployment. Use lowercase in `whitelist` to match the built-in catalog.
+Azure deployment names are **case-insensitive** in API calls [MICROSOFT-NORMATIVE]. But deployment name and model name can differ:
+
+| Deployment name | Model name (Azure metadata) |
+|---|---|
+| `kimi-k2` | `Kimi-K2-Thinking` |
+
+Whitelist must include **both** (lowercased): `kimi-k2` and `kimi-k2-thinking`. Use the emit script to generate a correct whitelist automatically.
+
+## Self-check: find missing whitelist entries
+
+```powershell
+$deployed = az cognitiveservices account deployment list -g <RG> -n <RES> `
+  --query "[].name" -o json | ConvertFrom-Json | ForEach-Object { $_.ToLower() } | Sort-Object
+$whitelist = (Get-Content ~/.config/opencode/opencode.json | ConvertFrom-Json).provider.'azure-cognitive-services'.whitelist | Sort-Object
+$missing = $deployed | Where-Object { $_ -notin $whitelist }
+if ($missing) { Write-Host "MISSING from whitelist: $($missing -join ', ')" -ForegroundColor Red }
+else { Write-Host "Whitelist matches all deployments" -ForegroundColor Green }
+```
+
+```bash
+# Bash version (requires jq)
+diff <(az cognitiveservices account deployment list -g <RG> -n <RES> --query "[].name" -o tsv | tr '[:upper:]' '[:lower:]' | sort) \
+     <(jq -r '.provider."azure-cognitive-services".whitelist[]' ~/.config/opencode/opencode.json | sort)
+```

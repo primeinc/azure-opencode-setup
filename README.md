@@ -4,15 +4,16 @@ Connect Azure AI Services models to [OpenCode](https://opencode.ai/) in minutes.
 
 ## What it does
 
-Your AI coding agent follows a 7-step workflow:
+Run one script → get a ready-to-paste `opencode.json` config block:
 
-1. **Discover** — Finds AI Services resources across all your Azure subscriptions
-2. **Match** — Maps your endpoint to the correct OpenCode provider (`azure-cognitive-services` or `azure`)
-3. **Verify** — Smoke-tests the endpoint before configuring anything
-4. **Auth** — Sets env var + `/connect` API key (stored securely in `auth.json`)
-5. **Configure** — Writes `opencode.json` with `whitelist` filtering and `disabled_providers`
-6. **Validate** — Checks quota and deployment status to catch 429s and 404s early
-7. **Done** — Select your model with `/models`
+```powershell
+.\scripts\emit-opencode-azure-cogsvc-config.ps1 -Subscription "<SUB_ID>" -Resource "<RESOURCE>"
+```
+```bash
+./scripts/emit-opencode-azure-cogsvc-config.sh --subscription "<SUB_ID>" --resource "<RESOURCE>"
+```
+
+The script discovers your Azure AI Services resource, lists all deployments, normalizes names (handles deployment ≠ model name mismatches like `kimi-k2` → `Kimi-K2-Thinking`), and prints JSON you paste directly into `opencode.json`.
 
 ## Install
 
@@ -52,12 +53,15 @@ The skill activates automatically and walks through discovery, config, and verif
 
 ```
 azure-opencode-setup/
-├── SKILL.md                              # Main skill (workflow + config template)
+├── SKILL.md                              # Main skill (quick path + manual path + rules)
+├── scripts/
+│   ├── emit-opencode-azure-cogsvc-config.ps1  # PowerShell: emit ready-to-paste config
+│   └── emit-opencode-azure-cogsvc-config.sh   # Bash: emit ready-to-paste config (requires jq)
 └── references/
     ├── discovery-scripts.md              # Cross-subscription az CLI loops
-    ├── verify-endpoint.md                # PowerShell + bash smoke tests
+    ├── verify-endpoint.md                # Smoke tests for both endpoint types
     ├── quota-validation.md               # Pre-flight capacity & quota checks
-    └── troubleshooting.md                # Common errors + fixes
+    └── troubleshooting.md                # Common errors + self-check diff command
 ```
 
 ## Prerequisites
@@ -71,9 +75,11 @@ azure-opencode-setup/
 | Feature | Details |
 |---------|---------|
 | **Cross-subscription discovery** | Loops through all subs to find AI resources |
-| **Whitelist filtering** | Shows only deployed models in `/models` (via [undocumented whitelist](https://github.com/anomalyco/opencode/issues/9203)) |
+| **Automation script** | One command → ready-to-paste `opencode.json` block |
+| **Whitelist filtering** | Deployment names + model name aliases for catalog compat |
 | **Dual provider support** | Handles both `*.cognitiveservices.azure.com` and `*.openai.azure.com` |
 | **Quota validation** | Catches exhausted quota before you hit 429s |
+| **Self-check** | Diff command to find whitelist vs deployment drift |
 | **Both shells** | PowerShell and bash scripts throughout |
 
 ## Troubleshooting quick ref
