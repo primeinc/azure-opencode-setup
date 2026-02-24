@@ -120,7 +120,10 @@ def atomic_write_json(
             prefix=".tmp_",
             suffix=".json",
         )
-        os.write(fd, encoded)
+        # Handle partial writes from os.write
+        written = 0
+        while written < len(encoded):
+            written += os.write(fd, encoded[written:])
         os.fsync(fd)
         os.close(fd)
         fd = -1

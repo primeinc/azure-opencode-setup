@@ -92,6 +92,7 @@ class TestBackupFile:
         mode = backup.stat().st_mode & _MODE_BITS
         _require(condition=mode == _MODE_FILE_USER_ONLY, message="Expected 0o600 perms")
 
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows-specific ACL test")
     def test_backup_restricts_permissions_on_windows(
         self,
         tmp_path: Path,
@@ -100,7 +101,7 @@ class TestBackupFile:
         """Backup file calls restrict_permissions on Windows.
 
         Verifies that backup_file delegates to io.restrict_permissions
-        to enforce owner-only ACL on Windows (or POSIX 0o600 otherwise).
+        to enforce owner-only ACL on Windows.
 
         Backup files must not inherit world-readable ACLs from parent
         directories on Windows.
@@ -206,11 +207,18 @@ class TestBackupFile:
         """
         from azure_opencode_setup import io as io_module
 
-        mocker.patch.object(
-            io_module,
-            "_restrict_windows_acl" if sys.platform == "win32" else "Path.chmod",
-            side_effect=OSError("Permission denied"),
-        )
+        if sys.platform == "win32":
+            mocker.patch.object(
+                io_module,
+                "_restrict_windows_acl",
+                side_effect=OSError("Permission denied"),
+            )
+        else:
+            mocker.patch.object(
+                Path,
+                "chmod",
+                side_effect=OSError("Permission denied"),
+            )
 
         original = tmp_path / "auth.json"
         original.write_text('{"secret": "value"}', encoding="utf-8")

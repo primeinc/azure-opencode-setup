@@ -243,7 +243,8 @@ else
         printf 'export %s=%q\n' "$ENV_VAR" "$RES" >> "$RC_FILE"
         echo "  Added $ENV_VAR to $RC_FILE" >&2
       else
-        grep -v "^export ${ENV_VAR}=" "$RC_FILE" > "${RC_FILE}.tmp" && mv "${RC_FILE}.tmp" "$RC_FILE"
+        sed "/^export ${ENV_VAR}=/d" "$RC_FILE" > "${RC_FILE}.tmp"
+        mv "${RC_FILE}.tmp" "$RC_FILE"
         printf 'export %s=%q\n' "$ENV_VAR" "$RES" >> "$RC_FILE"
         echo "  Updated $ENV_VAR in $RC_FILE" >&2
       fi

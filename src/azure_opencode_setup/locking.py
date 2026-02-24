@@ -61,7 +61,7 @@ def backup_file(path: Path) -> Path:
         # Windows: copy then restrict ACL
         shutil.copy2(str(path), str(backup_path))
         restrict_permissions(backup_path)
-    else:
+    else:  # pragma: no cover (POSIX-only branch)
         # POSIX: create with restricted perms atomically, then copy content
         fd = os.open(
             str(backup_path),
@@ -70,7 +70,11 @@ def backup_file(path: Path) -> Path:
         )
         try:
             content = path.read_bytes()
-            os.write(fd, content)
+            # Handle partial writes from os.write
+            written = 0
+            while written < len(content):
+                written += os.write(fd, content[written:])
+            os.fsync(fd)
         finally:
             os.close(fd)
         # Copy metadata (mtime, atime) but preserve our restricted permissions
