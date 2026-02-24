@@ -37,20 +37,19 @@ def backup_file(path: Path) -> Path:
     successive calls.
 
     Args:
-        path: The file to back up (must exist).
+        path (Path): The file to back up (must exist).
 
     Returns:
-        Path to the newly created backup file.
+        Path: Path to the newly created backup file.
     """
     now = datetime.datetime.now(tz=datetime.UTC)
     ts = now.strftime("%Y%m%dT%H%M%S.%f")
-    rand = secrets.token_hex(2)  # 4 hex chars
+    rand = secrets.token_hex(2)
     backup_name = f"{path.name}.{ts}_{rand}.bak"
     backup_path = path.parent / backup_name
 
     shutil.copy2(str(path), str(backup_path))
 
-    # Restrict backup permissions (it may contain secrets).
     if sys.platform != "win32":
         backup_path.chmod(0o600)
 
@@ -68,14 +67,14 @@ def file_lock(
     The lock file is ``<path>.lock`` (e.g. ``auth.json.lock``).
 
     Args:
-        path: The data file to protect.
-        timeout: Seconds to wait for the lock before raising.
+        path (Path): The data file to protect.
+        timeout (float, default=30.0): Seconds to wait for the lock before raising.
 
     Raises:
         LockError: If the lock cannot be acquired within *timeout*.
 
     Yields:
-        Nothing.  The lock is held for the duration of the ``with`` block.
+        None: The lock is held for the duration of the ``with`` block.
     """
     lock_path = path.with_suffix(path.suffix + ".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)

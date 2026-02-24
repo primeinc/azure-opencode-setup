@@ -10,26 +10,36 @@ from typing import TypedDict
 
 
 class AuthEntry(TypedDict):
-    """A single provider auth entry in ``auth.json``."""
+    """A single provider auth entry in ``auth.json``.
 
-    type: str  # Literal["api"] at runtime, str for TypedDict compat
+    Attributes:
+        type (str): Auth entry type (OpenCode expects "api").
+        key (str): API key string.
+    """
+
+    type: str
     key: str
 
 
-# AuthFile is a plain dict mapping provider-id → AuthEntry.
-# We use a type alias (not a class) because auth.json is an open dict
-# where provider IDs are arbitrary strings.
 AuthFile = dict[str, AuthEntry]
 
 
 class ProviderOptions(TypedDict):
-    """Options block inside a provider config."""
+    """Options block inside a provider config.
+
+    Attributes:
+        baseURL (str): Base URL for the provider's OpenAI-compatible endpoint.
+    """
 
     baseURL: str
 
 
 class ModelEntry(TypedDict):
-    """A single custom model entry inside a provider config."""
+    """A single custom model entry inside a provider config.
+
+    Attributes:
+        name (str): Display name for the model.
+    """
 
     name: str
 
@@ -37,8 +47,10 @@ class ModelEntry(TypedDict):
 class ProviderConfig(TypedDict, total=False):
     """Configuration for a single provider in ``opencode.json``.
 
-    ``options`` and ``whitelist`` are always present in our output.
-    ``models`` is optional (only present when custom models exist).
+    Attributes:
+        options (ProviderOptions): Provider options.
+        whitelist (list[str]): Model names allowed for this provider.
+        models (dict[str, ModelEntry]): Optional custom model mapping.
     """
 
     options: ProviderOptions
@@ -47,10 +59,11 @@ class ProviderConfig(TypedDict, total=False):
 
 
 class OpenCodeConfig(TypedDict, total=False):
-    """Top-level shape of ``opencode.json`` (fields this tool manages).
+    """Top-level shape of ``opencode.json`` for fields this tool manages.
 
-    Uses ``total=False`` because existing files may have any subset of keys,
-    plus keys we don't manage (which are preserved via merge).
+    Attributes:
+        disabled_providers (list[str]): Provider IDs to disable.
+        provider (dict[str, ProviderConfig]): Provider configuration mapping.
     """
 
     disabled_providers: list[str]

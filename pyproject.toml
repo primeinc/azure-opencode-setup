@@ -37,16 +37,18 @@ packages = ["src/azure_opencode_setup"]
 
 # ---------- pytest ----------
 [tool.pytest.ini_options]
-testpaths = [
-    "tests",
-    "src/azure_opencode_setup",
-]
+minversion = "9.0"
+testpaths = ["tests", "src/azure_opencode_setup"]
+pythonpath = ["src"]
 strict = true
 xfail_strict = true
-filterwarnings = ["error"]
+filterwarnings = [
+    "error",
+    # Relax if a specific dep starts emitting warnings:
+    # "default::DeprecationWarning:httpx.*",
+]
 doctest_optionflags = [
     "ELLIPSIS",
-    "IGNORE_EXCEPTION_DETAIL",
     "NORMALIZE_WHITESPACE",
 ]
 addopts = [
@@ -60,13 +62,14 @@ addopts = [
     "--cov-report=term-missing:skip-covered",
     "--cov-report=html",
     "--cov-report=json:coverage.json",
+    "--cov-fail-under=95",
 ]
 
 # ---------- coverage.py ----------
 [tool.coverage.run]
 source = ["azure_opencode_setup"]
 branch = true
-parallel = true
+parallel = false
 omit = [
     "tests/*",
 ]
@@ -75,10 +78,10 @@ omit = [
 show_missing = true
 skip_covered = true
 fail_under = 95
-exclude_lines = [
-    "pragma: no cover",
+exclude_also = [
     "if TYPE_CHECKING:",
     "raise NotImplementedError",
+    "if __name__ == \"__main__\":",
 ]
 
 # ---------- ruff ----------
@@ -131,6 +134,8 @@ exclude_dirs = ["tests", ".venv"]
 [tool.pydoclint]
 style = "google"
 exclude = "\\.venv|\\.git|build|dist"
+allow-init-docstring = true
+arg-type-hints-in-docstring = true
 check-arg-order = true
 check-return-types = true
 check-yield-types = true

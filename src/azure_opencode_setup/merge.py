@@ -23,8 +23,6 @@ from azure_opencode_setup.errors import ValidationError
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-# Azure Cognitive Services resource name: 2-64 chars, alphanumeric + hyphens,
-# must start/end with alphanumeric.  No dots, slashes, spaces, or specials.
 _RESOURCE_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9-]{0,62}[a-zA-Z0-9]$|^[a-zA-Z0-9]$")
 
 _COGS_ENDPOINT_TEMPLATE = "https://{name}.cognitiveservices.azure.com/openai"
@@ -32,6 +30,12 @@ _COGS_ENDPOINT_TEMPLATE = "https://{name}.cognitiveservices.azure.com/openai"
 
 def validate_resource_name(name: str) -> None:
     """Validate an Azure resource name against naming rules.
+
+    Args:
+        name (str): Resource name to validate.
+
+    Returns:
+        None: Raises on invalid input.
 
     Raises:
         ValidationError: If *name* is empty, too long, or contains invalid chars.
@@ -56,12 +60,13 @@ def merge_auth(
     """Merge a single provider auth entry into an existing auth dict.
 
     Args:
-        existing: The current contents of ``auth.json`` (or ``{}``).
-        provider_id: The provider ID to insert/update.
-        api_key: The API key value.
+        existing (dict[str, object]): The current contents of ``auth.json`` (or ``{}``).
+        provider_id (str): The provider ID to insert/update.
+        api_key (str): The API key value.
 
     Returns:
-        A new dict with the provider entry upserted and all other entries preserved.
+        dict[str, object]: A new dict with the provider entry upserted and all other entries
+            preserved.
 
     Raises:
         ValidationError: If *provider_id* or *api_key* is empty.
@@ -87,14 +92,14 @@ def merge_config(
     """Merge provider config into an existing opencode.json dict.
 
     Args:
-        existing: The current contents of ``opencode.json`` (or ``{}``).
-        provider_id: The provider ID to configure.
-        resource_name: The Azure resource name (used to construct baseURL).
-        whitelist: Model names to whitelist.
-        disabled_providers: Provider IDs to disable.
+        existing (dict[str, object]): The current contents of ``opencode.json`` (or ``{}``).
+        provider_id (str): The provider ID to configure.
+        resource_name (str): The Azure resource name (used to construct baseURL).
+        whitelist (Sequence[str]): Model names to whitelist.
+        disabled_providers (Sequence[str]): Provider IDs to disable.
 
     Returns:
-        A new dict with the provider block merged and all other keys preserved.
+        dict[str, object]: A new dict with the provider block merged and all other keys preserved.
 
     Raises:
         ValidationError: If inputs fail validation.
@@ -106,11 +111,12 @@ def merge_config(
 
     result = dict(existing)
 
-    # --- disabled_providers: union + dedup ---
-    merged_dp = _merge_disabled_providers(result.get("disabled_providers"), disabled_providers)
+    try:
+        merged_dp = _merge_disabled_providers(result.get("disabled_providers"), disabled_providers)
+    except InvalidSchemaError as exc:
+        raise InvalidSchemaError(path=exc.path, detail=exc.detail) from exc
     result["disabled_providers"] = merged_dp
 
-    # --- provider block ---
     existing_providers = result.get("provider")
     if isinstance(existing_providers, dict):
         typed_providers = cast("dict[str, object]", existing_providers)
@@ -137,11 +143,11 @@ def _merge_disabled_providers(
     """Extract, validate, and merge disabled_providers lists.
 
     Args:
-        existing_dp: The raw ``disabled_providers`` value from existing config.
-        new_providers: New provider IDs to add to the list.
+        existing_dp (object): The raw ``disabled_providers`` value from existing config.
+        new_providers (Sequence[str]): New provider IDs to add to the list.
 
     Returns:
-        Deduplicated, order-preserving merged list.
+        list[str]: Deduplicated, order-preserving merged list.
 
     Raises:
         InvalidSchemaError: If *existing_dp* is not None/list.
@@ -165,7 +171,17 @@ def _merge_disabled_providers(
 
 
 def _validate_string_list(items: list[object]) -> None:
-    """Raise if any item in *items* is not a string."""
+    """Raise if any item in *items* is not a string.
+
+    Args:
+        items (list[object]): Values to validate.
+
+    Returns:
+        None: Raises on invalid input.
+
+    Raises:
+        InvalidSchemaError: If any element is not a string.
+    """
     for item in items:
         if not isinstance(item, str):
             raise InvalidSchemaError(
@@ -175,7 +191,14 @@ def _validate_string_list(items: list[object]) -> None:
 
 
 def _dedup_preserve_order(items: list[str]) -> list[str]:
-    """Remove duplicates from *items* while preserving first-occurrence order."""
+    """Remove duplicates from *items* while preserving first-occurrence order.
+
+    Args:
+        items (list[str]): Items to deduplicate.
+
+    Returns:
+        list[str]: Unique items in first-occurrence order.
+    """
     seen: set[str] = set()
     result: list[str] = []
     for item in items:

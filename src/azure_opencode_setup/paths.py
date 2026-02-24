@@ -18,12 +18,20 @@ _AUTH_REL = Path(".local") / "share" / "opencode" / "auth.json"
 
 
 def opencode_config_path() -> Path:
-    """Return the absolute path to ``opencode.json``."""
+    """Return the absolute path to ``opencode.json``.
+
+    Returns:
+        Path: The canonical OpenCode config path.
+    """
     return Path.home() / _CONFIG_REL
 
 
 def opencode_auth_path() -> Path:
-    """Return the absolute path to ``auth.json``."""
+    """Return the absolute path to ``auth.json``.
+
+    Returns:
+        Path: The canonical OpenCode auth path.
+    """
     return Path.home() / _AUTH_REL
 
 
@@ -31,10 +39,13 @@ def ensure_parent_dir(target: Path, *, secure: bool = False) -> None:
     """Create parent directories for *target* if they don't exist.
 
     Args:
-        target: The file whose parent directory chain should exist.
-        secure: If ``True`` **and** on POSIX, set the immediate parent to
+        target (Path): The file whose parent directory chain should exist.
+        secure (bool, default=False): If ``True`` **and** on POSIX, set the immediate parent to
                 ``0o700`` (user-only).  On Windows this is a no-op; ACL
                 restriction happens at the file level in ``io.py``.
+
+    Returns:
+        None: Creates directories and optionally sets permissions as a side effect.
     """
     parent = target.parent
     parent.mkdir(parents=True, exist_ok=True)

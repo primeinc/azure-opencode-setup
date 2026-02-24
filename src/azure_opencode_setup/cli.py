@@ -44,7 +44,18 @@ _EXIT_FILESYSTEM = 4
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class SetupParams:
-    """Grouped parameters for the setup workflow (avoids PLR0913)."""
+    """Grouped parameters for the setup workflow.
+
+    Attributes:
+        resource_name (str): Azure Cognitive Services resource name used to build the endpoint.
+        provider_id (str): OpenCode provider identifier to configure.
+        whitelist (list[str]): Model names to whitelist for this provider.
+        disabled_providers (list[str]): Provider IDs to append to ``disabled_providers``.
+        key_env (str): Environment variable name holding the API key.
+        key_stdin (bool): If ``True``, prompt for the API key via stdin instead of env.
+        config_path (Path | None, default=None): Override for the OpenCode config file path.
+        auth_path (Path | None, default=None): Override for the OpenCode auth file path.
+    """
 
     resource_name: str
     provider_id: str
@@ -57,7 +68,11 @@ class SetupParams:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the CLI argument parser."""
+    """Build the CLI argument parser.
+
+    Returns:
+        argparse.ArgumentParser: The configured argument parser.
+    """
     parser = argparse.ArgumentParser(
         prog="azure-opencode-setup",
         description="Configure OpenCode CLI to talk to Azure AI Services.",
@@ -105,16 +120,23 @@ def run_setup(params: SetupParams) -> int:
     """Execute the setup workflow. Returns an exit code.
 
     Args:
-        params: Grouped setup parameters.
+        params (SetupParams): Grouped setup parameters.
 
     Returns:
-        Exit code (0, 3, or 4).
+        int: Exit code (0, 3, or 4).
     """
     return _execute_setup(params)
 
 
 def _execute_setup(params: SetupParams) -> int:
-    """Core setup logic using grouped parameters."""
+    """Execute the setup workflow with resolved paths.
+
+    Args:
+        params (SetupParams): Grouped setup parameters.
+
+    Returns:
+        int: Exit code (0, 3, or 4).
+    """
     resolved_config = (
         params.config_path
         if params.config_path is not None
@@ -126,14 +148,12 @@ def _execute_setup(params: SetupParams) -> int:
         else opencode_auth_path()
     )
 
-    # --- Obtain API key ---
     try:
         api_key = _obtain_api_key(key_env=params.key_env, key_stdin=params.key_stdin)
     except ValidationError as exc:
         _err(str(exc))
         return _EXIT_VALIDATION
 
-    # --- Merge + write ---
     try:
         _do_merge_and_write(
             params=params,
@@ -152,7 +172,18 @@ def _execute_setup(params: SetupParams) -> int:
 
 
 def _obtain_api_key(*, key_env: str, key_stdin: bool) -> str:
-    """Read the API key from env or stdin."""
+    """Read the API key from env or stdin.
+
+    Args:
+        key_env (str): Environment variable name for the API key.
+        key_stdin (bool): If ``True``, read the key from a no-echo stdin prompt.
+
+    Returns:
+        str: The API key string.
+
+    Raises:
+        ValidationError: If no key source is configured or the key is empty.
+    """
     if key_stdin:
         key = getpass.getpass("Enter API key: ")
         if not key:
@@ -178,14 +209,21 @@ def _do_merge_and_write(
     auth_path: Path,
     api_key: str,
 ) -> None:
-    """Read existing files, merge, back up, and write atomically."""
-    # Lock both files (config first, then auth — consistent ordering prevents deadlock).
+    """Read existing files, merge, back up, and write atomically.
+
+    Args:
+        params (SetupParams): Grouped setup parameters.
+        config_path (Path): Destination path for ``opencode.json``.
+        auth_path (Path): Destination path for ``auth.json``.
+        api_key (str): API key to store in ``auth.json``.
+
+    Returns:
+        None: Writes files as a side effect.
+    """
     with file_lock(config_path), file_lock(auth_path):
-        # Read existing
         existing_config = read_json_object(config_path)
         existing_auth = read_json_object(auth_path)
 
-        # Merge
         new_config = merge_config(
             existing_config,
             provider_id=params.provider_id,
@@ -199,24 +237,36 @@ def _do_merge_and_write(
             api_key=api_key,
         )
 
-        # Backup existing files (if they exist)
         if config_path.exists():
             backup_file(config_path)
         if auth_path.exists():
             backup_file(auth_path)
 
-        # Write atomically
         atomic_write_json(config_path, new_config)
         atomic_write_json(auth_path, new_auth, secure=True)
 
 
 def _err(msg: str) -> None:
-    """Write an error message to stderr."""
+    """Write an error message to stderr.
+
+    Args:
+        msg (str): Message to write.
+
+    Returns:
+        None: Writes to stderr as a side effect.
+    """
     sys.stderr.write(f"error: {msg}\n")
 
 
 def main() -> None:
-    """CLI entry point."""
+    """CLI entry point.
+
+    Returns:
+        None: Always raises ``SystemExit``.
+
+    Raises:
+        SystemExit: Always raised with the command's exit code.
+    """
     parser = build_parser()
     args = parser.parse_args()
 

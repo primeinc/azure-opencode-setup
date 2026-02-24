@@ -25,7 +25,23 @@ from azure_opencode_setup.errors import InvalidJsonError
 from azure_opencode_setup.errors import InvalidSchemaError
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from collections.abc import Mapping
+    from typing import Protocol
+
+    class _Advapi32(Protocol):
+        LookupAccountNameW: Callable[..., int]
+        GetLengthSid: Callable[..., int]
+        InitializeAcl: Callable[..., int]
+        AddAccessAllowedAce: Callable[..., int]
+        SetNamedSecurityInfoW: Callable[..., int]
+
+    class _Kernel32(Protocol):
+        GetLastError: Callable[[], int]
+
+    class _Windll(Protocol):
+        advapi32: object
+        kernel32: object
 
 _logger = logging.getLogger(__name__)
 
@@ -34,10 +50,10 @@ def read_json_object(path: Path) -> dict[str, object]:
     """Read a JSON file and return its contents as a dict.
 
     Args:
-        path: Path to the JSON file.
+        path (Path): Path to the JSON file.
 
     Returns:
-        The parsed dict.  If the file does not exist, returns ``{}``.
+        dict[str, object]: The parsed dict. If the file does not exist, returns ``{}``.
 
     Raises:
         InvalidJsonError: If the file contains syntactically invalid JSON.
@@ -53,7 +69,7 @@ def read_json_object(path: Path) -> dict[str, object]:
         raise InvalidJsonError(path=str(path), detail=msg) from exc
 
     try:
-        parsed = json.loads(text)  # Returns Any
+        parsed = json.loads(text)
     except json.JSONDecodeError as exc:
         raise InvalidJsonError(path=str(path), detail=str(exc)) from exc
 
@@ -82,9 +98,12 @@ def atomic_write_json(
     5. Optionally restrict permissions.
 
     Args:
-        path: Destination file.
-        data: Dict-like data to serialize.
-        secure: If ``True``, restrict the file to owner-only after write.
+        path (Path): Destination file.
+        data (Mapping[str, object]): Dict-like data to serialize.
+        secure (bool, default=False): If ``True``, restrict the file to owner-only after write.
+
+    Returns:
+        None: Writes the JSON file as a side effect.
     """
     content = json.dumps(dict(data), indent=2, ensure_ascii=False) + "\n"
     encoded = content.encode("utf-8")
@@ -120,23 +139,32 @@ def atomic_write_json(
 def restrict_permissions(path: Path) -> None:
     """Restrict *path* to owner-only access.
 
-    - POSIX: ``chmod 0o600``
-    - Windows: Uses Win32 API via ctypes to set owner-only ACL.
-      Best-effort; does not raise on failure.
+    Args:
+        path (Path): File path to restrict.
+
+    Returns:
+        None: Applies filesystem permission changes as a side effect.
+
+    Notes:
+        - POSIX: ``chmod 0o600``.
+        - Windows: Uses Win32 API via ctypes to set owner-only ACL.
+          Best-effort; does not raise on failure.
     """
     if sys.platform == "win32":
         _restrict_windows_acl(path)
     else:
-        path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0o600
-
-
-# ---------------------------------------------------------------------------
-# Private helpers
-# ---------------------------------------------------------------------------
+        path.chmod(stat.S_IRUSR | stat.S_IWUSR)
 
 
 def _cleanup_tmp(tmp_path_str: str) -> None:
-    """Remove a temporary file, ignoring errors."""
+    """Remove a temporary file, ignoring errors.
+
+    Args:
+        tmp_path_str (str): Path string to remove.
+
+    Returns:
+        None: Removes a temporary file as a side effect.
+    """
     with suppress(OSError):
         Path(tmp_path_str).unlink()
 
@@ -146,6 +174,13 @@ def _atomic_replace(src: str, dst: str) -> None:
 
     On POSIX, ``Path.replace`` is atomic.
     On Windows, ``Path.replace`` works for files (since Python 3.3+).
+
+    Args:
+        src (str): Source path.
+        dst (str): Destination path.
+
+    Returns:
+        None: Replaces the destination file as a side effect.
     """
     Path(src).replace(dst)
 
@@ -155,6 +190,12 @@ def _restrict_windows_acl(path: Path) -> None:
 
     Sets the file DACL to grant GENERIC_ALL to the current user only,
     removing inherited ACEs.
+
+    Args:
+        path (Path): File path to restrict.
+
+    Returns:
+        None: Attempts to apply ACL restriction as a side effect.
     """
     username = os.environ.get("USERNAME", "")
     if not username:
@@ -171,21 +212,29 @@ def _win32_set_owner_only_acl(file_path: str, username: str) -> None:
 
     This replaces the icacls subprocess call to avoid S603 (subprocess
     with variable arguments).  Uses SetNamedSecurityInfoW via ctypes.
+
+    Args:
+        file_path (str): Path to the target file.
+        username (str): Username that should retain access.
+
+    Returns:
+        None: Applies a DACL to the file as a side effect.
+
+    Raises:
+        OSError: If Win32 API calls fail.
     """
     if sys.platform != "win32":
         return
 
-    advapi32 = ctypes.windll.advapi32  # type: ignore[attr-defined]
-    kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+    windll = cast("_Windll", ctypes.windll)
+    advapi32 = cast("_Advapi32", windll.advapi32)
+    kernel32 = cast("_Kernel32", windll.kernel32)
 
-    # Constants
     se_file_object = 1
     dacl_security_information = 0x00000004
     acl_revision = 2
-    access_allowed_ace_type = 0
     generic_all = 0x10000000
 
-    # Build a SID for the current user
     sid = ctypes.create_string_buffer(256)
     sid_size = ctypes.c_ulong(256)
     domain = ctypes.create_unicode_buffer(256)
@@ -206,11 +255,9 @@ def _win32_set_owner_only_acl(file_path: str, username: str) -> None:
         msg = f"LookupAccountNameW failed: error {err_code}"
         raise OSError(msg)
 
-    # Build minimal ACL with one ACCESS_ALLOWED_ACE
-    # ACL header (8 bytes) + ACE header (4 bytes) + mask (4 bytes) + SID
     sid_length = advapi32.GetLengthSid(sid)
-    ace_size = 4 + 4 + sid_length  # ACE_HEADER + ACCESS_MASK + SID
-    acl_size = 8 + ace_size  # ACL header + one ACE
+    ace_size = 4 + 4 + sid_length
+    acl_size = 8 + ace_size
 
     acl_buf = ctypes.create_string_buffer(acl_size)
     if not advapi32.InitializeAcl(acl_buf, acl_size, acl_revision):
@@ -228,7 +275,6 @@ def _win32_set_owner_only_acl(file_path: str, username: str) -> None:
         msg = f"AddAccessAllowedAce failed: error {err_code}"
         raise OSError(msg)
 
-    # Apply the DACL (protected = no inheritance)
     protected_dacl = 0x80000000 | dacl_security_information
     result = advapi32.SetNamedSecurityInfoW(
         file_path,
@@ -242,5 +288,3 @@ def _win32_set_owner_only_acl(file_path: str, username: str) -> None:
     if result != 0:
         msg = f"SetNamedSecurityInfoW failed: error {result}"
         raise OSError(msg)
-
-    _ = access_allowed_ace_type  # Silence unused-variable if needed

@@ -24,19 +24,16 @@ _ERR_BELOW_FLOOR = "{path}: {got}% < {floor}%"
 
 
 _REQ_BASE: dict[str, float] = {
-    # Bucket A: pure, deterministic logic should be near-perfect.
     "src/azure_opencode_setup/merge.py": 98.0,
     "src/azure_opencode_setup/io.py": 98.0,
     "src/azure_opencode_setup/types.py": 98.0,
     "src/azure_opencode_setup/errors.py": 98.0,
-    # Bucket C: CLI surface; focus on exit codes/commands, not every print line.
     "src/azure_opencode_setup/cli.py": 90.0,
 }
 
 
 def _requirements() -> dict[str, float]:
     req = dict(_REQ_BASE)
-    # Bucket B: OS-specific behavior. Enforce stricter floors where practical.
     if sys.platform != "win32":
         req["src/azure_opencode_setup/paths.py"] = 98.0
         req["src/azure_opencode_setup/locking.py"] = 98.0
