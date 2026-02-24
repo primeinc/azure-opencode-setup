@@ -35,6 +35,7 @@ if TYPE_CHECKING:
         InitializeAcl: Callable[..., int]
         AddAccessAllowedAce: Callable[..., int]
         SetNamedSecurityInfoW: Callable[..., int]
+        GetUserNameW: Callable[..., int]
 
     class _Kernel32(Protocol):
         GetLastError: Callable[[], int]
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
     class _Windll(Protocol):
         advapi32: object
         kernel32: object
+
 
 _logger = logging.getLogger(__name__)
 
@@ -136,22 +138,25 @@ def atomic_write_json(
             _cleanup_tmp(tmp_path_str)
 
 
-def restrict_permissions(path: Path) -> None:
+def restrict_permissions(path: Path, *, strict: bool = False) -> None:
     """Restrict *path* to owner-only access.
 
     Args:
         path (Path): File path to restrict.
+        strict (bool, default=False): If ``True``, raise on failure instead of logging.
 
     Returns:
         None: Applies filesystem permission changes as a side effect.
 
+    Raises:
+        OSError: If ``strict=True`` and permission restriction fails.
+
     Notes:
         - POSIX: ``chmod 0o600``.
         - Windows: Uses Win32 API via ctypes to set owner-only ACL.
-          Best-effort; does not raise on failure.
     """
     if sys.platform == "win32":
-        _restrict_windows_acl(path)
+        _restrict_windows_acl(path, strict=strict)
     else:
         path.chmod(stat.S_IRUSR | stat.S_IWUSR)
 
@@ -185,7 +190,34 @@ def _atomic_replace(src: str, dst: str) -> None:
     Path(src).replace(dst)
 
 
-def _restrict_windows_acl(path: Path) -> None:
+def _get_current_username() -> str:
+    """Get current username via Win32 GetUserNameW API.
+
+    Returns:
+        str: The current user's username.
+
+    Raises:
+        OSError: If the Win32 API call fails.
+    """
+    if sys.platform != "win32":
+        return ""
+
+    windll = cast("_Windll", ctypes.windll)
+    advapi32 = cast("_Advapi32", windll.advapi32)
+    kernel32 = cast("_Kernel32", windll.kernel32)
+
+    size = ctypes.c_ulong(256)
+    buf = ctypes.create_unicode_buffer(256)
+
+    if not advapi32.GetUserNameW(buf, ctypes.byref(size)):
+        err_code = kernel32.GetLastError()
+        msg = f"GetUserNameW failed: error {err_code}"
+        raise OSError(msg)
+
+    return buf.value
+
+
+def _restrict_windows_acl(path: Path, *, strict: bool = False) -> None:
     """Best-effort ACL restriction on Windows using Win32 ctypes.
 
     Sets the file DACL to grant GENERIC_ALL to the current user only,
@@ -193,17 +225,22 @@ def _restrict_windows_acl(path: Path) -> None:
 
     Args:
         path (Path): File path to restrict.
+        strict (bool, default=False): If ``True``, raise on failure instead of logging.
 
     Returns:
         None: Attempts to apply ACL restriction as a side effect.
-    """
-    username = os.environ.get("USERNAME", "")
-    if not username:
-        return
 
+    Raises:
+        OSError: If ``strict=True`` and ACL restriction fails.
+    """
     try:
+        username = _get_current_username()
+        if not username:
+            return
         _win32_set_owner_only_acl(str(path), username)
     except OSError as exc:
+        if strict:
+            raise
         _logger.debug("Win32 ACL restriction failed for %s: %s", path, exc)
 
 

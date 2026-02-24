@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import os
 import secrets
 import shutil
 import sys
@@ -21,6 +22,7 @@ from typing import TYPE_CHECKING
 import portalocker
 
 from azure_opencode_setup.errors import LockError
+from azure_opencode_setup.io import restrict_permissions
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -36,11 +38,18 @@ def backup_file(path: Path) -> Path:
     plus a 4-hex random suffix to prevent collisions even under rapid
     successive calls.
 
+    Permissions are restricted to owner-only access on both POSIX and Windows.
+    On POSIX, permissions are set atomically at creation to prevent TOCTOU.
+
     Args:
         path (Path): The file to back up (must exist).
 
     Returns:
         Path: Path to the newly created backup file.
+
+    Note:
+        Assumes caller has validated *path* is not a symlink to a sensitive
+        system file. Symlink attack mitigation is the caller's responsibility.
     """
     now = datetime.datetime.now(tz=datetime.UTC)
     ts = now.strftime("%Y%m%dT%H%M%S.%f")
@@ -48,10 +57,24 @@ def backup_file(path: Path) -> Path:
     backup_name = f"{path.name}.{ts}_{rand}.bak"
     backup_path = path.parent / backup_name
 
-    shutil.copy2(str(path), str(backup_path))
-
-    if sys.platform != "win32":
-        backup_path.chmod(0o600)
+    if sys.platform == "win32":
+        # Windows: copy then restrict ACL
+        shutil.copy2(str(path), str(backup_path))
+        restrict_permissions(backup_path)
+    else:
+        # POSIX: create with restricted perms atomically, then copy content
+        fd = os.open(
+            str(backup_path),
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+            0o600,
+        )
+        try:
+            content = path.read_bytes()
+            os.write(fd, content)
+        finally:
+            os.close(fd)
+        # Copy metadata (mtime, atime) like copy2
+        shutil.copystat(str(path), str(backup_path))
 
     return backup_path
 

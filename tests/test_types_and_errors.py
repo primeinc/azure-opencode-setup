@@ -10,6 +10,7 @@ from typing import get_type_hints
 
 import pytest
 
+from azure_opencode_setup.errors import DiscoveryError
 from azure_opencode_setup.errors import InvalidJsonError
 from azure_opencode_setup.errors import InvalidSchemaError
 from azure_opencode_setup.errors import LockError
@@ -75,6 +76,12 @@ class TestErrorHierarchy:
         _require(condition=err.field == "resource_name", message="Expected field preserved")
         _require(condition="invalid chars" in str(err), message="Expected detail in str")
 
+    def test_discovery_error(self) -> None:
+        """DiscoveryError includes detail string."""
+        err = DiscoveryError(detail="az CLI not found")
+        _require(condition=err.detail == "az CLI not found", message="Expected detail preserved")
+        _require(condition="az CLI" in str(err), message="Expected detail in str")
+
     def test_all_errors_have_str(self) -> None:
         """Every custom error must produce a meaningful str()."""
         cases = [
@@ -83,6 +90,7 @@ class TestErrorHierarchy:
             PermissionRestrictError(path="/a", cause=OSError("x")),
             LockError(path="/a", detail="d"),
             ValidationError(field="f", detail="d"),
+            DiscoveryError(detail="d"),
         ]
         for err in cases:
             msg = str(err)

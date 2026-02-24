@@ -6,7 +6,40 @@ They are the single source of truth for the merge logic and CLI.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TypedDict
+
+
+@dataclass(frozen=True, slots=True)
+class CognitiveAccount:
+    """A discovered Azure Cognitive Services or OpenAI account.
+
+    Attributes:
+        name (str): Resource name.
+        resource_group (str): Resource group containing the account.
+        endpoint (str): OpenAI-compatible endpoint URL.
+        location (str): Azure region.
+        kind (str): Resource kind ("AIServices" or "OpenAI").
+    """
+
+    name: str
+    resource_group: str
+    endpoint: str
+    location: str
+    kind: str
+
+
+@dataclass(frozen=True, slots=True)
+class Deployment:
+    """A deployed model within a Cognitive Services account.
+
+    Attributes:
+        name (str): Deployment name (used as model ID in API calls).
+        model (str): Underlying model name (e.g. "gpt-4o").
+    """
+
+    name: str
+    model: str
 
 
 class AuthEntry(TypedDict):

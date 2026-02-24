@@ -84,3 +84,20 @@ class ValidationError(OpenCodeSetupError):
         self.field = field
         self.detail = detail
         super().__init__(f"Validation error on '{field}': {detail}")
+
+
+class DiscoveryError(OpenCodeSetupError):
+    """Raised when Azure resource discovery fails.
+
+    This includes az CLI not found, CLI errors, and malformed responses.
+    Error messages are sanitized to never include secrets or raw CLI output.
+    """
+
+    def __init__(self, *, detail: str) -> None:
+        """Initialize DiscoveryError.
+
+        Args:
+            detail (str): Human-readable discovery failure (sanitized, no secrets).
+        """
+        self.detail = detail
+        super().__init__(f"Discovery error: {detail}")

@@ -33,7 +33,7 @@ param(
   [switch]$VerifyOnly,
   [switch]$SetEnv,
   [switch]$PersistEnv,
-  [string]$ConfigPath = (Join-Path $HOME ".config\opencode\opencode.json")
+  [string]$ConfigPath = (Join-Path $env:APPDATA "opencode\opencode.json")
 )
 $ErrorActionPreference = "Stop"
 
@@ -313,9 +313,9 @@ if (-not $Apply) {
   Write-Host "  Written to $ConfigPath" -ForegroundColor Green
 
   # 8c. Write API key to auth.json (same format as /connect writes)
-  # Path: $HOME\.local\share\opencode\auth.json
-  # Source: opencode docs — Windows storage location is %USERPROFILE%\.local\share\opencode
-  $authPath = Join-Path $HOME ".local\share\opencode\auth.json"
+  # Path: %LOCALAPPDATA%\opencode\auth.json
+  # Source: XDG basedir spec — Unix ~/.local/share maps to Windows %LOCALAPPDATA%
+  $authPath = Join-Path $env:LOCALAPPDATA "opencode\auth.json"
   $authDir = Split-Path $authPath
   if (-not (Test-Path $authDir)) { New-Item -Path $authDir -ItemType Directory -Force | Out-Null }
   if (Test-Path $authPath) {
