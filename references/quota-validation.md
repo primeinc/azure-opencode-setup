@@ -2,8 +2,6 @@
 
 Pre-flight checks to run BEFORE configuring OpenCode, to confirm models actually work.
 
-If you are validating compute prerequisites (ex: Confidential VMs for encryption-in-use), see `references/confidential-vm-quota.md`.
-
 ## Check deployed models are responding
 
 ```bash
