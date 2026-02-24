@@ -1,0 +1,1266 @@
+"""Tests for discovery.py — az CLI wrapper for Azure resource discovery.
+
+TDD: Written BEFORE implementation.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from unittest.mock import MagicMock
+from unittest.mock import patch
+
+import pytest
+
+from azure_opencode_setup.discovery import Subscription
+from azure_opencode_setup.discovery import find_cognitive_account
+from azure_opencode_setup.discovery import get_api_key
+from azure_opencode_setup.discovery import list_cognitive_accounts
+from azure_opencode_setup.discovery import list_deployments
+from azure_opencode_setup.discovery import list_subscriptions
+from azure_opencode_setup.discovery import pick_best_cognitive_account
+from azure_opencode_setup.errors import DiscoveryError
+from azure_opencode_setup.errors import ValidationError
+from azure_opencode_setup.types import CognitiveAccount
+from azure_opencode_setup.types import Deployment
+
+
+def _require(*, condition: bool, message: str) -> None:
+    """Fail the test if *condition* is false."""
+    if not condition:
+        pytest.fail(message)
+
+
+def _mock_subprocess_result(
+    *,
+    stdout: str = "",
+    stderr: str = "",
+    returncode: int = 0,
+) -> MagicMock:
+    """Create a mock subprocess.CompletedProcess result."""
+    result = MagicMock(spec=subprocess.CompletedProcess)
+    result.stdout = stdout
+    result.stderr = stderr
+    result.returncode = returncode
+    return result
+
+
+def _assert_az_command(*, cmd: list[str], contains: list[str]) -> None:
+    if sys.platform == "win32":
+        _require(condition=cmd[:3] == ["cmd.exe", "/c", "az"], message="Expected cmd.exe /c az")
+        haystack = cmd[3:]
+    else:
+        _require(condition=cmd[0] == "az", message="Expected az command")
+        haystack = cmd[1:]
+
+    for token in contains:
+        _require(condition=token in haystack, message=f"Expected {token} in az args")
+
+
+class TestListSubscriptions:
+    """Behavior tests for list_subscriptions."""
+
+    def test_returns_subscription_ids(self) -> None:
+        """Returns list of subscription IDs from az CLI output."""
+        mock_result = _mock_subprocess_result(
+            stdout="sub-id-1\nsub-id-2\nsub-id-3\n",
+            returncode=0,
+        )
+        with patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result):
+            result = list_subscriptions()
+        _require(
+            condition=result == ["sub-id-1", "sub-id-2", "sub-id-3"],
+            message="Expected subscription IDs",
+        )
+
+    def test_returns_empty_list_when_no_subscriptions(self) -> None:
+        """Returns empty list when no subscriptions found."""
+        mock_result = _mock_subprocess_result(stdout="", returncode=0)
+        with patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result):
+            result = list_subscriptions()
+        _require(condition=result == [], message="Expected empty list")
+
+    def test_raises_discovery_error_on_cli_not_found(self) -> None:
+        """Raises DiscoveryError when az CLI is not found."""
+        with (
+            patch(
+                "azure_opencode_setup.discovery.subprocess.run",
+                side_effect=FileNotFoundError("az not found"),
+            ),
+            pytest.raises(DiscoveryError, match="az CLI not found"),
+        ):
+            list_subscriptions()
+
+    def test_raises_discovery_error_on_nonzero_exit(self) -> None:
+        """Raises DiscoveryError when az CLI returns non-zero exit code."""
+        mock_result = _mock_subprocess_result(
+            stdout="",
+            stderr="some error",
+            returncode=1,
+        )
+        with (
+            patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result),
+            pytest.raises(DiscoveryError, match="az CLI command failed"),
+        ):
+            list_subscriptions()
+
+    def test_handles_whitespace_in_output(self) -> None:
+        """Handles extra whitespace and blank lines in output."""
+        mock_result = _mock_subprocess_result(
+            stdout="  sub-1  \n\n  sub-2  \n",
+            returncode=0,
+        )
+        with patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result):
+            result = list_subscriptions()
+        _require(condition=result == ["sub-1", "sub-2"], message="Expected trimmed IDs")
+
+    def test_calls_correct_az_command(self) -> None:
+        """Calls the correct az CLI command."""
+        mock_result = _mock_subprocess_result(stdout="sub-1\n", returncode=0)
+        with patch(
+            "azure_opencode_setup.discovery.subprocess.run",
+            return_value=mock_result,
+        ) as mock_run:
+            list_subscriptions()
+            mock_run.assert_called_once()
+            call_args = mock_run.call_args
+            cmd = call_args[0][0]
+            _assert_az_command(cmd=cmd, contains=["account", "list"])
+
+
+class TestRunAzCommand:
+    """Unit tests for Windows/POSIX az invocation wrapper."""
+
+    def test_raises_discovery_error_on_timeout(self) -> None:
+        """TimeoutExpired becomes a DiscoveryError."""
+
+        def _timeout(*_args: object, **_kwargs: object) -> MagicMock:
+            raise subprocess.TimeoutExpired(cmd=["az"], timeout=1)
+
+        with (
+            patch("azure_opencode_setup.discovery.subprocess.run", side_effect=_timeout),
+            pytest.raises(DiscoveryError, match="timed out"),
+        ):
+            list_subscriptions()
+
+    def test_uses_direct_az_on_non_windows(self) -> None:
+        """Non-win32 uses ["az", ...] (no cmd.exe wrapper)."""
+        mock_result = _mock_subprocess_result(stdout="sub-1\n", returncode=0)
+        with (
+            patch("azure_opencode_setup.discovery.sys.platform", "linux"),
+            patch(
+                "azure_opencode_setup.discovery.subprocess.run",
+                return_value=mock_result,
+            ) as mock_run,
+        ):
+            _ = list_subscriptions()
+
+        cmd = mock_run.call_args[0][0]
+        _require(condition=cmd[0] == "az", message="Expected direct az command")
+
+
+class TestFindCognitiveAccount:
+    """Behavior tests for find_cognitive_account across subscriptions."""
+
+    def test_picks_match_with_most_deployments(self) -> None:
+        """When multiple subscriptions have the same account name, pick most deployments."""
+        timeout = 5
+        subs = [
+            Subscription(id="sub-1", name="Sub One"),
+            Subscription(id="sub-2", name="Sub Two"),
+        ]
+
+        def fake_run(args: list[str], *, timeout_seconds: int = 60) -> str:
+            _require(
+                condition=timeout_seconds == timeout,
+                message="Expected timeout to flow through",
+            )
+            if args[:3] != ["cognitiveservices", "account", "list"]:
+                pytest.fail(f"Unexpected args: {args}")
+
+            sub_id = args[args.index("--subscription") + 1]
+            rg_by_sub = {"sub-1": "rg-one", "sub-2": "rg-two"}
+            location_by_sub = {"sub-1": "eastus", "sub-2": "westus2"}
+            if sub_id not in rg_by_sub:
+                pytest.fail(f"Unexpected subscription: {sub_id}")
+
+            return json.dumps(
+                [
+                    {
+                        "name": "acct",
+                        "kind": "AIServices",
+                        "endpoint": "https://acct.cognitiveservices.azure.com/",
+                        "rg": rg_by_sub[sub_id],
+                        "location": location_by_sub[sub_id],
+                    },
+                ],
+            )
+
+        def fake_deployments(
+            rg: str,
+            name: str,
+            *,
+            subscription_id: str | None = None,
+            timeout_seconds: int = 60,
+        ) -> list[Deployment]:
+            _ = timeout_seconds
+            _ = subscription_id
+            _require(condition=name == "acct", message="Expected account name")
+            if rg == "rg-one":
+                return [Deployment(name="dep1", model="gpt-4o")]
+            if rg == "rg-two":
+                return [
+                    Deployment(name="dep1", model="gpt-4o"),
+                    Deployment(name="dep2", model="gpt-4.1"),
+                ]
+            return []
+
+        with (
+            patch("azure_opencode_setup.discovery.list_subscriptions_detailed", return_value=subs),
+            patch("azure_opencode_setup.discovery._run_az_command", side_effect=fake_run),
+            patch("azure_opencode_setup.discovery.list_deployments", side_effect=fake_deployments),
+        ):
+            chosen, others = find_cognitive_account("acct", timeout_seconds=timeout)
+
+        _require(condition=chosen.subscription.id == "sub-2", message="Expected sub-2 chosen")
+        _require(condition=len(others) == 1, message="Expected one alternative")
+
+    def test_scopes_to_subscription_when_provided(self) -> None:
+        """When subscription_id is set, do not enumerate all subscriptions."""
+        timeout = 5
+        subs = [Subscription(id="sub-1", name="Sub One")]
+
+        def fake_run(args: list[str], *, timeout_seconds: int = 60) -> str:
+            _ = timeout_seconds
+            if args[:3] == ["cognitiveservices", "account", "list"]:
+                return json.dumps(
+                    [
+                        {
+                            "name": "acct",
+                            "kind": "AIServices",
+                            "endpoint": "https://acct.cognitiveservices.azure.com/",
+                            "rg": "rg-one",
+                            "location": "eastus",
+                        },
+                    ],
+                )
+            pytest.fail(f"Unexpected args: {args}")
+
+        with (
+            patch(
+                "azure_opencode_setup.discovery.list_subscriptions_detailed",
+                side_effect=AssertionError("Should not enumerate subscriptions"),
+            ),
+            patch("azure_opencode_setup.discovery._run_az_command", side_effect=fake_run),
+            patch("azure_opencode_setup.discovery.list_deployments", return_value=[]),
+        ):
+            chosen, others = find_cognitive_account(
+                "acct",
+                subscription_id="sub-1",
+                timeout_seconds=timeout,
+            )
+
+        _require(condition=chosen.subscription.id == subs[0].id, message="Expected scoped sub")
+        _require(condition=others == [], message="Expected no alternatives")
+
+
+class TestPickBestCognitiveAccount:
+    """Behavior tests for pick_best_cognitive_account."""
+
+    def test_picks_account_with_most_deployments(self) -> None:
+        """Auto-pick prefers the account with highest deployment count."""
+        timeout = 5
+        subs = [
+            Subscription(id="sub-1", name="Sub One"),
+            Subscription(id="sub-2", name="Sub Two"),
+        ]
+
+        def fake_accounts(sub_id: str, *, timeout_seconds: int = 60) -> list[CognitiveAccount]:
+            _ = timeout_seconds
+            if sub_id == "sub-1":
+                return [
+                    CognitiveAccount(
+                        name="acct-a",
+                        resource_group="rg-a",
+                        endpoint="https://acct-a.cognitiveservices.azure.com/",
+                        location="eastus",
+                        kind="AIServices",
+                    ),
+                ]
+            return [
+                CognitiveAccount(
+                    name="acct-b",
+                    resource_group="rg-b",
+                    endpoint="https://acct-b.cognitiveservices.azure.com/",
+                    location="westus2",
+                    kind="AIServices",
+                ),
+            ]
+
+        def fake_deployments(
+            rg: str,
+            name: str,
+            *,
+            subscription_id: str | None = None,
+            timeout_seconds: int = 60,
+        ) -> list[Deployment]:
+            _ = rg
+            _ = timeout_seconds
+            _ = subscription_id
+            if name == "acct-a":
+                return [Deployment(name="d1", model="gpt-4o")]
+            if name == "acct-b":
+                return [
+                    Deployment(name="d1", model="gpt-4o"),
+                    Deployment(name="d2", model="gpt-4.1"),
+                    Deployment(name="d3", model="text-embedding-3-small"),
+                ]
+            return []
+
+        with (
+            patch("azure_opencode_setup.discovery.list_subscriptions_detailed", return_value=subs),
+            patch(
+                "azure_opencode_setup.discovery.list_cognitive_accounts",
+                side_effect=fake_accounts,
+            ),
+            patch("azure_opencode_setup.discovery.list_deployments", side_effect=fake_deployments),
+        ):
+            chosen, others = pick_best_cognitive_account(timeout_seconds=timeout)
+
+        _require(condition=chosen.account.name == "acct-b", message="Expected acct-b chosen")
+        _require(condition=len(others) >= 1, message="Expected other candidates")
+
+    def test_scopes_to_subscription_when_provided(self) -> None:
+        """subscription_id bypasses list_subscriptions_detailed."""
+        with (
+            patch(
+                "azure_opencode_setup.discovery.list_subscriptions_detailed",
+                side_effect=AssertionError("should not enumerate subscriptions"),
+            ),
+            patch(
+                "azure_opencode_setup.discovery.list_cognitive_accounts",
+                return_value=[
+                    CognitiveAccount(
+                        name="acct",
+                        resource_group="rg",
+                        endpoint="https://acct.cognitiveservices.azure.com/",
+                        location="eastus",
+                        kind="AIServices",
+                    ),
+                ],
+            ),
+            patch(
+                "azure_opencode_setup.discovery.list_deployments",
+                return_value=[Deployment(name="d", model="gpt-4o")],
+            ),
+        ):
+            chosen, others = pick_best_cognitive_account(subscription_id="sub-1", timeout_seconds=5)
+
+        _require(
+            condition=chosen.subscription.id == "sub-1",
+            message="Expected scoped subscription",
+        )
+        _require(condition=others == [], message="Expected no other candidates")
+
+    def test_treats_deployment_errors_as_zero(self) -> None:
+        """Deployment list failures are treated as 0 deployments."""
+        subs = [Subscription(id="sub-1", name="Sub One"), Subscription(id="sub-2", name="Sub Two")]
+
+        def fake_accounts(sub_id: str, *, timeout_seconds: int = 60) -> list[CognitiveAccount]:
+            _ = timeout_seconds
+            if sub_id == "sub-1":
+                return [
+                    CognitiveAccount(
+                        name="acct-a",
+                        resource_group="rg-a",
+                        endpoint="https://acct-a.cognitiveservices.azure.com/",
+                        location="eastus",
+                        kind="AIServices",
+                    ),
+                ]
+            return [
+                CognitiveAccount(
+                    name="acct-b",
+                    resource_group="rg-b",
+                    endpoint="https://acct-b.cognitiveservices.azure.com/",
+                    location="westus2",
+                    kind="AIServices",
+                ),
+            ]
+
+        def fake_deployments(
+            rg: str,
+            name: str,
+            *,
+            subscription_id: str | None = None,
+            timeout_seconds: int = 60,
+        ) -> list[Deployment]:
+            _ = timeout_seconds
+            _ = subscription_id
+            if name == "acct-a":
+                raise DiscoveryError(detail="boom")
+            _require(condition=rg == "rg-b", message="Expected rg-b")
+            return [Deployment(name="d", model="gpt-4o")]
+
+        with (
+            patch("azure_opencode_setup.discovery.list_subscriptions_detailed", return_value=subs),
+            patch(
+                "azure_opencode_setup.discovery.list_cognitive_accounts",
+                side_effect=fake_accounts,
+            ),
+            patch("azure_opencode_setup.discovery.list_deployments", side_effect=fake_deployments),
+        ):
+            chosen, _others = pick_best_cognitive_account(timeout_seconds=5)
+
+        _require(condition=chosen.account.name == "acct-b", message="Expected acct-b chosen")
+
+    def test_raises_when_no_accounts_found(self) -> None:
+        """If no accounts exist across subscriptions, raise DiscoveryError."""
+        subs = [Subscription(id="sub-1", name="Sub One")]
+        with (
+            patch("azure_opencode_setup.discovery.list_subscriptions_detailed", return_value=subs),
+            patch("azure_opencode_setup.discovery.list_cognitive_accounts", return_value=[]),
+            pytest.raises(DiscoveryError, match="No Cognitive Services accounts found"),
+        ):
+            pick_best_cognitive_account(timeout_seconds=5)
+
+
+class TestListCognitiveAccounts:
+    """Behavior tests for list_cognitive_accounts."""
+
+    def test_returns_cognitive_accounts(self) -> None:
+        """Returns list of CognitiveAccount from az CLI output."""
+        json_output = json.dumps(
+            [
+                {
+                    "name": "my-ai-services",
+                    "kind": "AIServices",
+                    "endpoint": "https://my-ai.cognitiveservices.azure.com/",
+                    "rg": "my-resource-group",
+                    "location": "eastus",
+                },
+                {
+                    "name": "my-openai",
+                    "kind": "OpenAI",
+                    "endpoint": "https://my-openai.openai.azure.com/",
+                    "rg": "another-rg",
+                    "location": "westus2",
+                },
+            ],
+        )
+        mock_result = _mock_subprocess_result(stdout=json_output, returncode=0)
+        with patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result):
+            result = list_cognitive_accounts("valid-sub-id")
+
+        _require(condition=len(result) == 2, message="Expected 2 accounts")  # noqa: PLR2004
+        _require(condition=result[0].name == "my-ai-services", message="Expected name")
+        _require(condition=result[0].kind == "AIServices", message="Expected kind")
+        _require(condition=result[0].resource_group == "my-resource-group", message="Expected rg")
+        _require(
+            condition=result[0].endpoint == "https://my-ai.cognitiveservices.azure.com/",
+            message="Expected endpoint",
+        )
+        _require(condition=result[0].location == "eastus", message="Expected location")
+
+    def test_returns_empty_list_when_no_accounts(self) -> None:
+        """Returns empty list when no cognitive accounts found."""
+        mock_result = _mock_subprocess_result(stdout="[]", returncode=0)
+        with patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result):
+            result = list_cognitive_accounts("valid-sub-id")
+        _require(condition=result == [], message="Expected empty list")
+
+    def test_raises_validation_error_on_invalid_subscription_id(self) -> None:
+        """Raises ValidationError on invalid subscription ID."""
+        with pytest.raises(ValidationError, match="subscription_id"):
+            list_cognitive_accounts("invalid; rm -rf /")
+
+    def test_raises_validation_error_on_empty_subscription_id(self) -> None:
+        """Raises ValidationError on empty subscription ID."""
+        with pytest.raises(ValidationError, match="subscription_id"):
+            list_cognitive_accounts("")
+
+    def test_raises_discovery_error_on_cli_not_found(self) -> None:
+        """Raises DiscoveryError when az CLI is not found."""
+        with (
+            patch(
+                "azure_opencode_setup.discovery.subprocess.run",
+                side_effect=FileNotFoundError("az not found"),
+            ),
+            pytest.raises(DiscoveryError, match="az CLI not found"),
+        ):
+            list_cognitive_accounts("valid-sub-id")
+
+    def test_raises_discovery_error_on_nonzero_exit(self) -> None:
+        """Raises DiscoveryError when az CLI returns non-zero exit code."""
+        mock_result = _mock_subprocess_result(
+            stdout="",
+            stderr="some error",
+            returncode=1,
+        )
+        with (
+            patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result),
+            pytest.raises(DiscoveryError, match="az CLI command failed"),
+        ):
+            list_cognitive_accounts("valid-sub-id")
+
+    def test_raises_discovery_error_on_malformed_json(self) -> None:
+        """Raises DiscoveryError when az CLI returns malformed JSON."""
+        mock_result = _mock_subprocess_result(stdout="not valid json", returncode=0)
+        with (
+            patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result),
+            pytest.raises(DiscoveryError, match="Failed to parse"),
+        ):
+            list_cognitive_accounts("valid-sub-id")
+
+    def test_raises_discovery_error_on_unexpected_json_shape(self) -> None:
+        """Raises DiscoveryError when JSON is not a list."""
+        mock_result = _mock_subprocess_result(stdout='{"not": "a list"}', returncode=0)
+        with (
+            patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result),
+            pytest.raises(DiscoveryError, match="Unexpected response format"),
+        ):
+            list_cognitive_accounts("valid-sub-id")
+
+    def test_raises_discovery_error_on_non_dict_list_items(self) -> None:
+        """Raises DiscoveryError when list contains non-dict items."""
+        mock_result = _mock_subprocess_result(stdout='["string", 123, null]', returncode=0)
+        with (
+            patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result),
+            pytest.raises(DiscoveryError, match="expected object"),
+        ):
+            list_cognitive_accounts("valid-sub-id")
+
+    def test_calls_correct_az_command(self) -> None:
+        """Calls the correct az CLI command with subscription."""
+        mock_result = _mock_subprocess_result(stdout="[]", returncode=0)
+        with patch(
+            "azure_opencode_setup.discovery.subprocess.run",
+            return_value=mock_result,
+        ) as mock_run:
+            list_cognitive_accounts("my-subscription-123")
+            mock_run.assert_called_once()
+            call_args = mock_run.call_args
+            cmd = call_args[0][0]
+            _assert_az_command(
+                cmd=cmd,
+                contains=[
+                    "cognitiveservices",
+                    "account",
+                    "list",
+                    "--subscription",
+                    "my-subscription-123",
+                ],
+            )
+
+
+class TestListDeployments:
+    """Behavior tests for list_deployments."""
+
+    def test_returns_deployments(self) -> None:
+        """Returns list of Deployment from az CLI output."""
+        json_output = json.dumps(
+            [
+                {"name": "gpt-4o-deployment", "model": "gpt-4o"},
+                {"name": "gpt-35-turbo", "model": "gpt-35-turbo"},
+            ],
+        )
+        mock_result = _mock_subprocess_result(stdout=json_output, returncode=0)
+        with patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result):
+            result = list_deployments("my-rg", "my-account")
+
+        _require(condition=len(result) == 2, message="Expected 2 deployments")  # noqa: PLR2004
+        _require(condition=result[0].name == "gpt-4o-deployment", message="Expected name")
+        _require(condition=result[0].model == "gpt-4o", message="Expected model")
+
+    def test_returns_empty_list_when_no_deployments(self) -> None:
+        """Returns empty list when no deployments found."""
+        mock_result = _mock_subprocess_result(stdout="[]", returncode=0)
+        with patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result):
+            result = list_deployments("my-rg", "my-account")
+        _require(condition=result == [], message="Expected empty list")
+
+    def test_raises_validation_error_on_invalid_resource_group(self) -> None:
+        """Raises ValidationError on invalid resource group name."""
+        with pytest.raises(ValidationError, match="resource_group"):
+            list_deployments("invalid; drop table", "my-account")
+
+    def test_raises_validation_error_on_invalid_account_name(self) -> None:
+        """Raises ValidationError on invalid account name."""
+        with pytest.raises(ValidationError, match="account_name"):
+            list_deployments("my-rg", "invalid$(whoami)")
+
+    def test_raises_validation_error_on_empty_resource_group(self) -> None:
+        """Raises ValidationError on empty resource group."""
+        with pytest.raises(ValidationError, match="resource_group"):
+            list_deployments("", "my-account")
+
+    def test_raises_validation_error_on_empty_account_name(self) -> None:
+        """Raises ValidationError on empty account name."""
+        with pytest.raises(ValidationError, match="account_name"):
+            list_deployments("my-rg", "")
+
+    def test_raises_discovery_error_on_cli_not_found(self) -> None:
+        """Raises DiscoveryError when az CLI is not found."""
+        with (
+            patch(
+                "azure_opencode_setup.discovery.subprocess.run",
+                side_effect=FileNotFoundError("az not found"),
+            ),
+            pytest.raises(DiscoveryError, match="az CLI not found"),
+        ):
+            list_deployments("my-rg", "my-account")
+
+    def test_raises_discovery_error_on_nonzero_exit(self) -> None:
+        """Raises DiscoveryError when az CLI returns non-zero exit code."""
+        mock_result = _mock_subprocess_result(
+            stdout="",
+            stderr="some error",
+            returncode=1,
+        )
+        with (
+            patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result),
+            pytest.raises(DiscoveryError, match="az CLI command failed"),
+        ):
+            list_deployments("my-rg", "my-account")
+
+    def test_raises_discovery_error_on_malformed_json(self) -> None:
+        """Raises DiscoveryError when az CLI returns malformed JSON."""
+        mock_result = _mock_subprocess_result(stdout="{invalid", returncode=0)
+        with (
+            patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result),
+            pytest.raises(DiscoveryError, match="Failed to parse"),
+        ):
+            list_deployments("my-rg", "my-account")
+
+    def test_raises_discovery_error_on_unexpected_json_shape(self) -> None:
+        """Raises DiscoveryError when JSON is not a list."""
+        mock_result = _mock_subprocess_result(stdout='"just a string"', returncode=0)
+        with (
+            patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result),
+            pytest.raises(DiscoveryError, match="Unexpected response format"),
+        ):
+            list_deployments("my-rg", "my-account")
+
+    def test_calls_correct_az_command(self) -> None:
+        """Calls the correct az CLI command with resource group and name."""
+        mock_result = _mock_subprocess_result(stdout="[]", returncode=0)
+        with patch(
+            "azure_opencode_setup.discovery.subprocess.run",
+            return_value=mock_result,
+        ) as mock_run:
+            list_deployments("test-rg", "test-account")
+            mock_run.assert_called_once()
+            call_args = mock_run.call_args
+            cmd = call_args[0][0]
+            _assert_az_command(
+                cmd=cmd,
+                contains=["cognitiveservices", "account", "deployment", "list"],
+            )
+            _require(condition="-g" in cmd or "--resource-group" in cmd, message="Expected -g")
+            _require(condition="-n" in cmd or "--name" in cmd, message="Expected -n")
+
+    def test_includes_subscription_when_provided(self) -> None:
+        """Includes --subscription when subscription_id is provided."""
+        mock_result = _mock_subprocess_result(stdout="[]", returncode=0)
+        with patch(
+            "azure_opencode_setup.discovery.subprocess.run",
+            return_value=mock_result,
+        ) as mock_run:
+            _ = list_deployments(
+                "test-rg",
+                "test-account",
+                subscription_id="sub-1",
+            )
+
+        cmd = mock_run.call_args[0][0]
+        _require(condition="--subscription" in cmd, message="Expected --subscription")
+        _require(condition="sub-1" in cmd, message="Expected subscription id")
+
+
+class TestGetApiKey:
+    """Behavior tests for get_api_key."""
+
+    def test_returns_key1(self) -> None:
+        """Returns key1 from az CLI output."""
+        json_output = json.dumps({"key1": "secret-key-123", "key2": "backup-key-456"})
+        mock_result = _mock_subprocess_result(stdout=json_output, returncode=0)
+        with patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result):
+            result = get_api_key("my-rg", "my-account")
+        _require(condition=result == "secret-key-123", message="Expected key1 value")
+
+    def test_raises_validation_error_on_invalid_resource_group(self) -> None:
+        """Raises ValidationError on invalid resource group name."""
+        with pytest.raises(ValidationError, match="resource_group"):
+            get_api_key("invalid; rm -rf", "my-account")
+
+    def test_raises_validation_error_on_invalid_account_name(self) -> None:
+        """Raises ValidationError on invalid account name."""
+        with pytest.raises(ValidationError, match="account_name"):
+            get_api_key("my-rg", "invalid`id`")
+
+    def test_raises_validation_error_on_empty_resource_group(self) -> None:
+        """Raises ValidationError on empty resource group."""
+        with pytest.raises(ValidationError, match="resource_group"):
+            get_api_key("", "my-account")
+
+    def test_raises_validation_error_on_empty_account_name(self) -> None:
+        """Raises ValidationError on empty account name."""
+        with pytest.raises(ValidationError, match="account_name"):
+            get_api_key("my-rg", "")
+
+    def test_raises_discovery_error_on_cli_not_found(self) -> None:
+        """Raises DiscoveryError when az CLI is not found."""
+        with (
+            patch(
+                "azure_opencode_setup.discovery.subprocess.run",
+                side_effect=FileNotFoundError("az not found"),
+            ),
+            pytest.raises(DiscoveryError, match="az CLI not found"),
+        ):
+            get_api_key("my-rg", "my-account")
+
+    def test_raises_discovery_error_on_nonzero_exit(self) -> None:
+        """Raises DiscoveryError when az CLI returns non-zero exit code."""
+        mock_result = _mock_subprocess_result(
+            stdout="",
+            stderr="some error",
+            returncode=1,
+        )
+        with (
+            patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result),
+            pytest.raises(DiscoveryError, match="az CLI command failed"),
+        ):
+            get_api_key("my-rg", "my-account")
+
+    def test_raises_discovery_error_on_malformed_json(self) -> None:
+        """Raises DiscoveryError when az CLI returns malformed JSON."""
+        mock_result = _mock_subprocess_result(stdout="not json", returncode=0)
+        with (
+            patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result),
+            pytest.raises(DiscoveryError, match="Failed to parse"),
+        ):
+            get_api_key("my-rg", "my-account")
+
+    def test_raises_discovery_error_on_missing_key1(self) -> None:
+        """Raises DiscoveryError when key1 is missing from response."""
+        json_output = json.dumps({"key2": "only-backup"})
+        mock_result = _mock_subprocess_result(stdout=json_output, returncode=0)
+        with (
+            patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result),
+            pytest.raises(DiscoveryError, match="key1 not found"),
+        ):
+            get_api_key("my-rg", "my-account")
+
+    def test_raises_discovery_error_on_unexpected_json_shape(self) -> None:
+        """Raises DiscoveryError when JSON is not an object."""
+        mock_result = _mock_subprocess_result(stdout="[]", returncode=0)
+        with (
+            patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result),
+            pytest.raises(DiscoveryError, match="Unexpected response format"),
+        ):
+            get_api_key("my-rg", "my-account")
+
+    def test_error_message_does_not_contain_key(self) -> None:
+        """DiscoveryError message must not leak API keys."""
+        mock_result = _mock_subprocess_result(
+            stdout='{"key1": "SUPER_SECRET_KEY", "key2": "ALSO_SECRET"}',
+            stderr="SUPER_SECRET_KEY",  # Simulating key in stderr
+            returncode=1,
+        )
+        with (
+            patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result),
+            pytest.raises(DiscoveryError) as exc_info,
+        ):
+            get_api_key("my-rg", "my-account")
+        error_message = str(exc_info.value)
+        _require(
+            condition="SUPER_SECRET_KEY" not in error_message,
+            message="API key leaked in error message",
+        )
+        _require(
+            condition="ALSO_SECRET" not in error_message,
+            message="API key leaked in error message",
+        )
+
+    def test_calls_correct_az_command(self) -> None:
+        """Calls the correct az CLI command for keys."""
+        json_output = json.dumps({"key1": "key", "key2": "key2"})
+        mock_result = _mock_subprocess_result(stdout=json_output, returncode=0)
+        with patch(
+            "azure_opencode_setup.discovery.subprocess.run",
+            return_value=mock_result,
+        ) as mock_run:
+            get_api_key("test-rg", "test-account")
+            mock_run.assert_called_once()
+            call_args = mock_run.call_args
+            cmd = call_args[0][0]
+            _assert_az_command(cmd=cmd, contains=["cognitiveservices", "account", "keys", "list"])
+
+    def test_includes_subscription_when_provided(self) -> None:
+        """Includes --subscription when subscription_id is provided."""
+        json_output = json.dumps({"key1": "key", "key2": "key2"})
+        mock_result = _mock_subprocess_result(stdout=json_output, returncode=0)
+        with patch(
+            "azure_opencode_setup.discovery.subprocess.run",
+            return_value=mock_result,
+        ) as mock_run:
+            _ = get_api_key("test-rg", "test-account", subscription_id="sub-1")
+
+        cmd = mock_run.call_args[0][0]
+        _require(condition="--subscription" in cmd, message="Expected --subscription")
+        _require(condition="sub-1" in cmd, message="Expected subscription id")
+
+
+class TestInputValidation:
+    """Security tests for input validation."""
+
+    @pytest.mark.parametrize(
+        "invalid_input",
+        [
+            "name; rm -rf /",
+            "name && whoami",
+            "name | cat /etc/passwd",
+            "name$(id)",
+            "name`id`",
+            "name\necho pwned",
+            "name\recho pwned",
+            "../../../etc/passwd",
+            "name with spaces",
+            "name\twith\ttabs",
+        ],
+    )
+    def test_list_cognitive_accounts_rejects_injection(self, invalid_input: str) -> None:
+        """list_cognitive_accounts rejects command injection attempts."""
+        with pytest.raises(ValidationError):
+            list_cognitive_accounts(invalid_input)
+
+    @pytest.mark.parametrize(
+        "invalid_input",
+        [
+            "name; rm -rf /",
+            "name && whoami",
+            "name | cat /etc/passwd",
+            "name$(id)",
+            "name`id`",
+            "name\necho pwned",
+            "../../../etc/passwd",
+        ],
+    )
+    def test_list_deployments_rejects_injection(self, invalid_input: str) -> None:
+        """list_deployments rejects command injection attempts."""
+        with pytest.raises(ValidationError):
+            list_deployments(invalid_input, "valid-name")
+        with pytest.raises(ValidationError):
+            list_deployments("valid-name", invalid_input)
+
+    @pytest.mark.parametrize(
+        "invalid_input",
+        [
+            "name; rm -rf /",
+            "name && whoami",
+            "name$(id)",
+            "name`id`",
+        ],
+    )
+    def test_get_api_key_rejects_injection(self, invalid_input: str) -> None:
+        """get_api_key rejects command injection attempts."""
+        with pytest.raises(ValidationError):
+            get_api_key(invalid_input, "valid-name")
+        with pytest.raises(ValidationError):
+            get_api_key("valid-name", invalid_input)
+
+    @pytest.mark.parametrize(
+        "valid_input",
+        [
+            "my-resource-group",
+            "myResourceGroup123",
+            "my_resource_group",
+            "rg-123",
+            "RG_TEST",
+            "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+        ],
+    )
+    def test_accepts_valid_azure_names(self, valid_input: str) -> None:
+        """Functions accept valid Azure resource names."""
+        mock_result = _mock_subprocess_result(stdout="[]", returncode=0)
+        with patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result):
+            # Should not raise ValidationError
+            list_cognitive_accounts(valid_input)
+            list_deployments(valid_input, valid_input)
+
+        json_output = json.dumps({"key1": "test", "key2": "test2"})
+        mock_result_keys = _mock_subprocess_result(stdout=json_output, returncode=0)
+        with patch(
+            "azure_opencode_setup.discovery.subprocess.run",
+            return_value=mock_result_keys,
+        ):
+            get_api_key(valid_input, valid_input)
+
+
+class TestSubprocessSecurity:
+    """Security tests for subprocess handling."""
+
+    def test_no_shell_true_in_list_subscriptions(self) -> None:
+        """list_subscriptions must not use shell=True."""
+        mock_result = _mock_subprocess_result(stdout="sub-1\n", returncode=0)
+        with patch(
+            "azure_opencode_setup.discovery.subprocess.run",
+            return_value=mock_result,
+        ) as mock_run:
+            list_subscriptions()
+            call_kwargs = mock_run.call_args[1]
+            _require(
+                condition=call_kwargs.get("shell") is not True,
+                message="shell=True is forbidden",
+            )
+
+    def test_no_shell_true_in_list_cognitive_accounts(self) -> None:
+        """list_cognitive_accounts must not use shell=True."""
+        mock_result = _mock_subprocess_result(stdout="[]", returncode=0)
+        with patch(
+            "azure_opencode_setup.discovery.subprocess.run",
+            return_value=mock_result,
+        ) as mock_run:
+            list_cognitive_accounts("valid-sub")
+            call_kwargs = mock_run.call_args[1]
+            _require(
+                condition=call_kwargs.get("shell") is not True,
+                message="shell=True is forbidden",
+            )
+
+    def test_no_shell_true_in_list_deployments(self) -> None:
+        """list_deployments must not use shell=True."""
+        mock_result = _mock_subprocess_result(stdout="[]", returncode=0)
+        with patch(
+            "azure_opencode_setup.discovery.subprocess.run",
+            return_value=mock_result,
+        ) as mock_run:
+            list_deployments("valid-rg", "valid-name")
+            call_kwargs = mock_run.call_args[1]
+            _require(
+                condition=call_kwargs.get("shell") is not True,
+                message="shell=True is forbidden",
+            )
+
+    def test_no_shell_true_in_get_api_key(self) -> None:
+        """get_api_key must not use shell=True."""
+        json_output = json.dumps({"key1": "test", "key2": "test2"})
+        mock_result = _mock_subprocess_result(stdout=json_output, returncode=0)
+        with patch(
+            "azure_opencode_setup.discovery.subprocess.run",
+            return_value=mock_result,
+        ) as mock_run:
+            get_api_key("valid-rg", "valid-name")
+            call_kwargs = mock_run.call_args[1]
+            _require(
+                condition=call_kwargs.get("shell") is not True,
+                message="shell=True is forbidden",
+            )
+
+
+class TestDataClasses:
+    """Tests for data class behavior."""
+
+    def test_cognitive_account_is_frozen(self) -> None:
+        """CognitiveAccount instances are immutable."""
+        account = CognitiveAccount(
+            name="test",
+            resource_group="rg",
+            endpoint="https://test.azure.com",
+            location="eastus",
+            kind="AIServices",
+        )
+        with pytest.raises(AttributeError):
+            account.name = "changed"  # type: ignore[misc]
+
+    def test_deployment_is_frozen(self) -> None:
+        """Deployment instances are immutable."""
+        deployment = Deployment(name="test", model="gpt-4o")
+        with pytest.raises(AttributeError):
+            deployment.name = "changed"  # type: ignore[misc]
+
+    def test_cognitive_account_equality(self) -> None:
+        """CognitiveAccount supports equality comparison."""
+        account1 = CognitiveAccount(
+            name="test",
+            resource_group="rg",
+            endpoint="https://test.azure.com",
+            location="eastus",
+            kind="AIServices",
+        )
+        account2 = CognitiveAccount(
+            name="test",
+            resource_group="rg",
+            endpoint="https://test.azure.com",
+            location="eastus",
+            kind="AIServices",
+        )
+        _require(condition=account1 == account2, message="Expected equality")
+
+    def test_deployment_equality(self) -> None:
+        """Deployment supports equality comparison."""
+        dep1 = Deployment(name="test", model="gpt-4o")
+        dep2 = Deployment(name="test", model="gpt-4o")
+        _require(condition=dep1 == dep2, message="Expected equality")
+
+
+class TestMissingFieldHandling:
+    """CRITICAL-2: Tests for handling malformed JSON from az CLI.
+
+    The discovery module directly accesses dictionary keys without checking
+    for existence. If Azure CLI returns malformed JSON (missing expected
+    fields), this raises KeyError instead of DiscoveryError.
+    """
+
+    def test_list_cognitive_accounts_missing_name_raises_discovery_error(self) -> None:
+        """CRITICAL-2: Missing 'name' field should raise DiscoveryError, not KeyError.
+
+        Current implementation at discovery.py:177-186 does:
+            name=item["name"]
+        without checking if 'name' exists first.
+        """
+        # JSON with missing 'name' field
+        json_output = json.dumps(
+            [
+                {
+                    # "name" is missing
+                    "kind": "AIServices",
+                    "endpoint": "https://test.cognitiveservices.azure.com/",
+                    "rg": "my-rg",
+                    "location": "eastus",
+                },
+            ],
+        )
+        mock_result = _mock_subprocess_result(stdout=json_output, returncode=0)
+        with (
+            patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result),
+            pytest.raises(DiscoveryError, match=r"missing.*field|malformed|invalid"),
+        ):
+            list_cognitive_accounts("valid-sub-id")
+
+    def test_list_cognitive_accounts_missing_rg_raises_discovery_error(self) -> None:
+        """CRITICAL-2: Missing 'rg' field should raise DiscoveryError, not KeyError."""
+        json_output = json.dumps(
+            [
+                {
+                    "name": "my-account",
+                    "kind": "AIServices",
+                    "endpoint": "https://test.cognitiveservices.azure.com/",
+                    # "rg" is missing
+                    "location": "eastus",
+                },
+            ],
+        )
+        mock_result = _mock_subprocess_result(stdout=json_output, returncode=0)
+        with (
+            patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result),
+            pytest.raises(DiscoveryError, match=r"missing.*field|malformed|invalid"),
+        ):
+            list_cognitive_accounts("valid-sub-id")
+
+    def test_list_cognitive_accounts_missing_endpoint_raises_discovery_error(self) -> None:
+        """CRITICAL-2: Missing 'endpoint' field should raise DiscoveryError, not KeyError."""
+        json_output = json.dumps(
+            [
+                {
+                    "name": "my-account",
+                    "kind": "AIServices",
+                    # "endpoint" is missing
+                    "rg": "my-rg",
+                    "location": "eastus",
+                },
+            ],
+        )
+        mock_result = _mock_subprocess_result(stdout=json_output, returncode=0)
+        with (
+            patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result),
+            pytest.raises(DiscoveryError, match=r"missing.*field|malformed|invalid"),
+        ):
+            list_cognitive_accounts("valid-sub-id")
+
+    def test_list_cognitive_accounts_missing_location_raises_discovery_error(self) -> None:
+        """CRITICAL-2: Missing 'location' field should raise DiscoveryError, not KeyError."""
+        json_output = json.dumps(
+            [
+                {
+                    "name": "my-account",
+                    "kind": "AIServices",
+                    "endpoint": "https://test.cognitiveservices.azure.com/",
+                    "rg": "my-rg",
+                    # "location" is missing
+                },
+            ],
+        )
+        mock_result = _mock_subprocess_result(stdout=json_output, returncode=0)
+        with (
+            patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result),
+            pytest.raises(DiscoveryError, match=r"missing.*field|malformed|invalid"),
+        ):
+            list_cognitive_accounts("valid-sub-id")
+
+    def test_list_cognitive_accounts_missing_kind_raises_discovery_error(self) -> None:
+        """CRITICAL-2: Missing 'kind' field should raise DiscoveryError, not KeyError."""
+        json_output = json.dumps(
+            [
+                {
+                    "name": "my-account",
+                    # "kind" is missing
+                    "endpoint": "https://test.cognitiveservices.azure.com/",
+                    "rg": "my-rg",
+                    "location": "eastus",
+                },
+            ],
+        )
+        mock_result = _mock_subprocess_result(stdout=json_output, returncode=0)
+        with (
+            patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result),
+            pytest.raises(DiscoveryError, match=r"missing.*field|malformed|invalid"),
+        ):
+            list_cognitive_accounts("valid-sub-id")
+
+    def test_list_deployments_missing_name_raises_discovery_error(self) -> None:
+        """CRITICAL-2: Missing 'name' field should raise DiscoveryError, not KeyError.
+
+        Current implementation at discovery.py:225 does:
+            Deployment(name=item["name"], model=item["model"])
+        without checking if fields exist first.
+        """
+        json_output = json.dumps(
+            [
+                {
+                    # "name" is missing
+                    "model": "gpt-4o",
+                },
+            ],
+        )
+        mock_result = _mock_subprocess_result(stdout=json_output, returncode=0)
+        with (
+            patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result),
+            pytest.raises(DiscoveryError, match=r"missing.*field|malformed|invalid"),
+        ):
+            list_deployments("my-rg", "my-account")
+
+    def test_list_deployments_missing_model_returns_empty_model(self) -> None:
+        """Missing 'model' field should return empty string (auto-versioning case)."""
+        json_output = json.dumps(
+            [
+                {
+                    "name": "gpt-4o-deployment",
+                    # "model" is missing - this happens with auto-versioning
+                },
+            ],
+        )
+        mock_result = _mock_subprocess_result(stdout=json_output, returncode=0)
+        with patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result):
+            deployments = list_deployments("my-rg", "my-account")
+            _require(condition=len(deployments) == 1, message="Expected 1 deployment")
+            _require(
+                condition=deployments[0].name == "gpt-4o-deployment",
+                message="Expected deployment name",
+            )
+            _require(condition=deployments[0].model == "", message="Expected empty model string")
+
+    def test_list_cognitive_accounts_all_fields_missing_raises_discovery_error(self) -> None:
+        """CRITICAL-2: Empty object should raise DiscoveryError, not KeyError."""
+        json_output = json.dumps([{}])
+        mock_result = _mock_subprocess_result(stdout=json_output, returncode=0)
+        with (
+            patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result),
+            pytest.raises(DiscoveryError, match=r"missing.*field|malformed|invalid"),
+        ):
+            list_cognitive_accounts("valid-sub-id")
+
+    def test_list_deployments_all_fields_missing_raises_discovery_error(self) -> None:
+        """CRITICAL-2: Empty object should raise DiscoveryError, not KeyError."""
+        json_output = json.dumps([{}])
+        mock_result = _mock_subprocess_result(stdout=json_output, returncode=0)
+        with (
+            patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result),
+            pytest.raises(DiscoveryError, match=r"missing.*field|malformed|invalid"),
+        ):
+            list_deployments("my-rg", "my-account")
+
+
+class TestSubprocessTimeout:
+    """MEDIUM-3: Tests for subprocess timeout handling.
+
+    The discovery module's _run_az_command at lines 58-63 uses subprocess.run()
+    without a timeout parameter. If az CLI hangs, the program hangs indefinitely.
+    """
+
+    def test_list_subscriptions_uses_subprocess_timeout(self) -> None:
+        """MEDIUM-3: subprocess.run must be called with a timeout parameter.
+
+        Current implementation at discovery.py:58-63:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        No timeout is specified, so a hanging az CLI will hang forever.
+        """
+        mock_result = _mock_subprocess_result(stdout="sub-1\n", returncode=0)
+        with patch(
+            "azure_opencode_setup.discovery.subprocess.run",
+            return_value=mock_result,
+        ) as mock_run:
+            list_subscriptions()
+            call_kwargs = mock_run.call_args[1]
+            # FAILING: Current impl has no timeout parameter
+            _require(
+                condition="timeout" in call_kwargs,
+                message=(
+                    "MEDIUM-3: subprocess.run called without timeout parameter. "
+                    "If az CLI hangs, the program hangs indefinitely."
+                ),
+            )
+            _require(
+                condition=call_kwargs.get("timeout") is not None,
+                message="timeout parameter should have a value",
+            )
+
+    def test_list_cognitive_accounts_uses_subprocess_timeout(self) -> None:
+        """MEDIUM-3: list_cognitive_accounts must use subprocess timeout."""
+        mock_result = _mock_subprocess_result(stdout="[]", returncode=0)
+        with patch(
+            "azure_opencode_setup.discovery.subprocess.run",
+            return_value=mock_result,
+        ) as mock_run:
+            list_cognitive_accounts("valid-sub")
+            call_kwargs = mock_run.call_args[1]
+            _require(
+                condition="timeout" in call_kwargs and call_kwargs["timeout"] is not None,
+                message="MEDIUM-3: subprocess.run called without timeout parameter.",
+            )
+
+    def test_list_deployments_uses_subprocess_timeout(self) -> None:
+        """MEDIUM-3: list_deployments must use subprocess timeout."""
+        mock_result = _mock_subprocess_result(stdout="[]", returncode=0)
+        with patch(
+            "azure_opencode_setup.discovery.subprocess.run",
+            return_value=mock_result,
+        ) as mock_run:
+            list_deployments("valid-rg", "valid-name")
+            call_kwargs = mock_run.call_args[1]
+            _require(
+                condition="timeout" in call_kwargs and call_kwargs["timeout"] is not None,
+                message="MEDIUM-3: subprocess.run called without timeout parameter.",
+            )
+
+    def test_get_api_key_uses_subprocess_timeout(self) -> None:
+        """MEDIUM-3: get_api_key must use subprocess timeout."""
+        json_output = json.dumps({"key1": "test", "key2": "test2"})
+        mock_result = _mock_subprocess_result(stdout=json_output, returncode=0)
+        with patch(
+            "azure_opencode_setup.discovery.subprocess.run",
+            return_value=mock_result,
+        ) as mock_run:
+            get_api_key("valid-rg", "valid-name")
+            call_kwargs = mock_run.call_args[1]
+            _require(
+                condition="timeout" in call_kwargs and call_kwargs["timeout"] is not None,
+                message="MEDIUM-3: subprocess.run called without timeout parameter.",
+            )

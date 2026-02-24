@@ -53,12 +53,15 @@ jobs:
 
       - name: Run smoke test
         if: steps.creds-check.outputs.skip == 'false'
+        env:
+          INPUT_SUBSCRIPTION: ${{ inputs.subscription }}
+          INPUT_RESOURCE: ${{ inputs.resource }}
         run: |
           set -euo pipefail
-          ARGS="--smoke"
-          if [[ -n "${{ inputs.subscription }}" ]]; then ARGS="$ARGS --subscription ${{ inputs.subscription }}"; fi
-          if [[ -n "${{ inputs.resource }}" ]];     then ARGS="$ARGS --resource ${{ inputs.resource }}"; fi
-          bash scripts/emit-opencode-azure-cogsvc-config.sh $ARGS
+          args=(--smoke)
+          if [[ -n "$INPUT_SUBSCRIPTION" ]]; then args+=(--subscription "$INPUT_SUBSCRIPTION"); fi
+          if [[ -n "$INPUT_RESOURCE" ]]; then args+=(--resource "$INPUT_RESOURCE"); fi
+          bash scripts/emit-opencode-azure-cogsvc-config.sh "${args[@]}"
 
   smoke-windows:
     name: Smoke (windows / pwsh)
@@ -101,11 +104,14 @@ jobs:
       - name: Run smoke test
         if: steps.creds-check.outputs.skip == 'false'
         shell: pwsh
+        env:
+          INPUT_SUBSCRIPTION: ${{ inputs.subscription }}
+          INPUT_RESOURCE: ${{ inputs.resource }}
         run: |
           # Use Join-Path so the path is correct regardless of cwd quirks.
           # pwsh -File requires an absolute path on some runners.
           $script = Join-Path $env:GITHUB_WORKSPACE 'scripts\emit-opencode-azure-cogsvc-config.ps1'
           $smokeArgs = @('-VerifyOnly')
-          if ('${{ inputs.subscription }}' -ne '') { $smokeArgs += '-Subscription'; $smokeArgs += '${{ inputs.subscription }}' }
-          if ('${{ inputs.resource }}'     -ne '') { $smokeArgs += '-Resource';     $smokeArgs += '${{ inputs.resource }}' }
+          if ($env:INPUT_SUBSCRIPTION -ne '') { $smokeArgs += '-Subscription'; $smokeArgs += $env:INPUT_SUBSCRIPTION }
+          if ($env:INPUT_RESOURCE -ne '') { $smokeArgs += '-Resource'; $smokeArgs += $env:INPUT_RESOURCE }
           & $script @smokeArgs

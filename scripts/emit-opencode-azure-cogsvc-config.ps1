@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
   Discovers Azure AI Services deployments and emits/applies an opencode.json provider block.
@@ -10,8 +10,13 @@
 .PARAMETER ResourceGroup
   Resource group. Auto-discovered if omitted.
 .PARAMETER Apply
-  If set: writes config to opencode.json, sets env var persistently, verifies endpoint.
+  If set: writes config to opencode.json and auth.json.
+  Env vars are NOT modified unless -SetEnv or -PersistEnv is passed.
   If not set: prints JSON to stdout only (dry run).
+.PARAMETER SetEnv
+  Optional. If set, also sets the provider resource-name env var in current session.
+.PARAMETER PersistEnv
+  Optional. If set, persists env var to User scope. Implies -SetEnv.
 .PARAMETER ConfigPath
   Path to opencode.json. Default: %APPDATA%\opencode\opencode.json
 .EXAMPLE
@@ -26,6 +31,8 @@ param(
   [string]$ResourceGroup,
   [switch]$Apply,
   [switch]$VerifyOnly,
+  [switch]$SetEnv,
+  [switch]$PersistEnv,
   [string]$ConfigPath = (Join-Path $env:APPDATA "opencode\opencode.json")
 )
 $ErrorActionPreference = "Stop"
@@ -40,8 +47,9 @@ if (-not $Subscription) {
       --query "[?kind=='AIServices' || kind=='OpenAI'].{name:name, rg:resourceGroup}" -o json 2>$null | ConvertFrom-Json
     if ($accts -and $accts.Count -gt 0) {
       foreach ($a in $accts) {
-        $depCount = [int](az cognitiveservices account deployment list `
-          --subscription $sub.id -g $a.rg -n $a.name --query "length([])" -o tsv 2>$null)
+        $depList = az cognitiveservices account deployment list `
+          --subscription $sub.id -g $a.rg -n $a.name -o json 2>$null | ConvertFrom-Json
+        $depCount = if ($depList) { [int]$depList.Count } else { 0 }
         $found += [PSCustomObject]@{
           SubId = $sub.id; SubName = $sub.name
           Resource = $a.name; RG = $a.rg; Deployments = $depCount
@@ -77,7 +85,8 @@ if (-not $Resource) {
 
   $best = $null; $bestCount = 0
   foreach ($acct in $accounts) {
-    $count = [int](az cognitiveservices account deployment list -g $acct.rg -n $acct.name --query "length([])" -o tsv 2>$null)
+    $depList = az cognitiveservices account deployment list -g $acct.rg -n $acct.name -o json 2>$null | ConvertFrom-Json
+    $count = if ($depList) { [int]$depList.Count } else { 0 }
     Write-Host "  $($acct.name) ($($acct.rg)): $count deployments" -ForegroundColor Gray
     if ($count -gt $bestCount) { $best = $acct; $bestCount = $count }
   }
@@ -120,7 +129,10 @@ if ($deployments.Count -eq 0) {
 Write-Host "`nDeployments on $Resource`:" -ForegroundColor White
 foreach ($d in $deployments) {
   $dep = $d.name; $mod = $d.properties.model.name
-  $mismatch = if ($dep.ToLower() -ne $mod.ToLower()) { " (model: $mod)" } else { "" }
+  $mismatch = ""
+  if ($mod) {
+    $mismatch = if ($dep.ToLower() -ne $mod.ToLower()) { " (model: $mod)" } else { "" }
+  }
   Write-Host "  $dep$mismatch" -ForegroundColor Gray
 }
 
@@ -148,7 +160,7 @@ $customModels = @{}
 foreach ($d in $deployments) {
   $depName = $d.name.ToLower()
   $modelName = $d.properties.model.name
-  if ($depName -ne $modelName.ToLower() -and $modelName -notmatch '^(gpt|o[0-9]|text-)') {
+  if ($modelName -and $depName -ne $modelName.ToLower() -and $modelName -notmatch '^(gpt|o[0-9]|text-)') {
     $customModels[$depName] = @{ name = "$modelName (Azure)" }
   }
 }
@@ -186,6 +198,9 @@ $providerBlock = @{
   disabled_providers = @($Disable)
   provider = @{
     $Provider = @{
+      options = @{
+        baseURL = "${Endpoint}openai"
+      }
       whitelist = $whitelist
       models = $customModels
     }
@@ -240,7 +255,8 @@ if ($VerifyOnly) {
 if (-not $Apply) {
   # Dry run: print instructions + JSON
   Write-Host "`n// ---- paste into opencode.json ----" -ForegroundColor Cyan
-  Write-Host "// Env var: $EnvVar=$Resource" -ForegroundColor Cyan
+  Write-Host "// No env var required: provider.options.baseURL is written in config" -ForegroundColor Cyan
+  Write-Host "// Optional env var mode: -SetEnv (session) or -PersistEnv (User scope)" -ForegroundColor Cyan
   Write-Host "// API key: /connect in OpenCode, paste output of:" -ForegroundColor Cyan
   Write-Host "//   az cognitiveservices account keys list -g $ResourceGroup -n $Resource --query key1 -o tsv" -ForegroundColor Cyan
   Write-Host ""
@@ -249,10 +265,18 @@ if (-not $Apply) {
   # -- Apply: merge into opencode.json -------------------------------------
   Write-Host "`nApplying configuration..." -ForegroundColor Yellow
 
-  # 8a. Set env var persistently
-  Write-Host "  Setting $EnvVar=$Resource (User scope)..." -ForegroundColor Gray
-  [System.Environment]::SetEnvironmentVariable($EnvVar, $Resource, "User")
-  $env:AZURE_COGNITIVE_SERVICES_RESOURCE_NAME = $Resource  # also set for current session
+  # 8a. Optional env var setup (off by default)
+  if ($PersistEnv) { $SetEnv = $true }
+  if ($SetEnv) {
+    Set-Item -Path "Env:$EnvVar" -Value $Resource
+    Write-Host "  Set $EnvVar in current shell session" -ForegroundColor Gray
+    if ($PersistEnv) {
+      [System.Environment]::SetEnvironmentVariable($EnvVar, $Resource, "User")
+      Write-Host "  Persisted $EnvVar to User scope" -ForegroundColor Gray
+    }
+  } else {
+    Write-Host "  Skipped env var setup (config uses provider.options.baseURL)" -ForegroundColor Gray
+  }
 
   # 8b. Merge into opencode.json
   if (Test-Path $ConfigPath) {
@@ -274,17 +298,23 @@ if (-not $Apply) {
     $existing | Add-Member -NotePropertyName 'provider' -NotePropertyValue ([PSCustomObject]@{}) -Force
   }
   $providerObj = [PSCustomObject]@{
+    options = [PSCustomObject]@{
+      baseURL = "${Endpoint}openai"
+    }
     whitelist = $whitelist
     models = $customModels
   }
   $existing.provider | Add-Member -NotePropertyName $Provider -NotePropertyValue $providerObj -Force
 
-  $existing | ConvertTo-Json -Depth 10 | Set-Content $ConfigPath -Encoding UTF8
+  # Write UTF-8 without BOM — Set-Content -Encoding UTF8 emits BOM on PS 5.1
+  $configDir = Split-Path $ConfigPath
+  if (-not (Test-Path $configDir)) { New-Item -Path $configDir -ItemType Directory -Force | Out-Null }
+  [System.IO.File]::WriteAllText($ConfigPath, ($existing | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
   Write-Host "  Written to $ConfigPath" -ForegroundColor Green
 
   # 8c. Write API key to auth.json (same format as /connect writes)
   # Path: %LOCALAPPDATA%\opencode\auth.json
-  # Source: xdg-basedir on Windows resolves data dir to %LOCALAPPDATA% (global/index.ts)
+  # Source: XDG basedir spec — Unix ~/.local/share maps to Windows %LOCALAPPDATA%
   $authPath = Join-Path $env:LOCALAPPDATA "opencode\auth.json"
   $authDir = Split-Path $authPath
   if (-not (Test-Path $authDir)) { New-Item -Path $authDir -ItemType Directory -Force | Out-Null }
@@ -298,7 +328,8 @@ if (-not $Apply) {
     type = "api"
     key  = $ApiKey
   }) -Force
-  $authJson | ConvertTo-Json -Depth 4 | Set-Content $authPath -Encoding UTF8
+  # Write UTF-8 without BOM — Set-Content -Encoding UTF8 emits BOM on PS 5.1
+  [System.IO.File]::WriteAllText($authPath, ($authJson | ConvertTo-Json -Depth 4), [System.Text.UTF8Encoding]::new($false))
   # Restrict auth.json to current user only (equivalent of bash chmod 600)
   # Pattern from: https://learn.microsoft.com/en-us/dotnet/api/system.security.accesscontrol.filesystemaccessrule.-ctor
   # Restrict auth.json to current user only (chmod 600 equivalent).

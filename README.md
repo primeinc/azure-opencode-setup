@@ -10,15 +10,19 @@ Run one script with zero args → get a fully configured OpenCode:
 # Dry run: prints what it would do
 .\scripts\emit-opencode-azure-cogsvc-config.ps1
 
-# Apply: writes opencode.json, sets env var, verifies endpoint
+# Apply: writes opencode.json + auth.json (no env writes by default)
 .\scripts\emit-opencode-azure-cogsvc-config.ps1 -Apply
+
+# Optional: set env var in current session
+.\scripts\emit-opencode-azure-cogsvc-config.ps1 -Apply -SetEnv
 ```
 ```bash
 ./scripts/emit-opencode-azure-cogsvc-config.sh           # dry run
-./scripts/emit-opencode-azure-cogsvc-config.sh --apply    # apply
+./scripts/emit-opencode-azure-cogsvc-config.sh --apply    # apply (no env writes)
+./scripts/emit-opencode-azure-cogsvc-config.sh --apply --set-env
 ```
 
-The script scans all Azure subscriptions, finds AI resources, picks the one with the most deployments, normalizes names (handles deployment ≠ model name mismatches like `kimi-k2` → `Kimi-K2-Thinking`), verifies the endpoint, and writes the config. Only manual step: `/connect` in OpenCode to paste the API key.
+The script scans all Azure subscriptions, finds AI resources, picks the one with the most deployments, normalizes names (handles deployment ≠ model name mismatches like `kimi-k2` → `Kimi-K2-Thinking`), verifies the endpoint, and writes the config. It writes API key auth directly to `auth.json`; `/connect` is optional.
 
 ## Install
 
@@ -99,3 +103,7 @@ azure-opencode-setup/
 ## License
 
 MIT
+
+## Security
+
+See `SECURITY.md` for threat model, defaults, and reporting.
