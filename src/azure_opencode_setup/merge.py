@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 _RESOURCE_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9-]{0,62}[a-zA-Z0-9]$|^[a-zA-Z0-9]$")
 
 _COGS_ENDPOINT_TEMPLATE = "https://{name}.cognitiveservices.azure.com/openai"
+_OPENAI_ENDPOINT_TEMPLATE = "https://{name}.openai.azure.com/openai"
 
 
 def validate_resource_name(name: str) -> None:
@@ -124,7 +125,11 @@ def merge_config(
     else:
         providers = {}
 
-    base_url = _COGS_ENDPOINT_TEMPLATE.format(name=resource_name)
+    # Use correct endpoint domain based on provider type
+    if provider_id == "azure":
+        base_url = _OPENAI_ENDPOINT_TEMPLATE.format(name=resource_name)
+    else:
+        base_url = _COGS_ENDPOINT_TEMPLATE.format(name=resource_name)
     deduped_whitelist = _dedup_preserve_order(list(whitelist))
 
     providers[provider_id] = {

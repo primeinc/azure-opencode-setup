@@ -229,7 +229,7 @@ def list_deployments(resource_group: str, account_name: str) -> list[Deployment]
     items = _parse_json_list(output)
 
     try:
-        return [Deployment(name=item["name"], model=item["model"]) for item in items]
+        return [Deployment(name=item["name"], model=item.get("model") or "") for item in items]
     except KeyError as exc:
         raise DiscoveryError(detail=f"Malformed response: missing field {exc}") from exc
 

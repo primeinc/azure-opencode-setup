@@ -102,7 +102,7 @@ class TestMergeConfig:
         )
 
     def test_sets_base_url_correctly(self) -> None:
-        """Constructs baseURL from resource name."""
+        """Constructs baseURL from resource name using cognitiveservices domain."""
         result = merge_config(
             {},
             provider_id="azure-cognitive-services",
@@ -124,6 +124,31 @@ class TestMergeConfig:
         _require(
             condition="myres.cognitiveservices.azure.com" in base_url,
             message="Expected cognitiveservices host",
+        )
+
+    def test_sets_base_url_for_azure_openai_provider(self) -> None:
+        """Constructs baseURL using openai.azure.com for 'azure' provider."""
+        result = merge_config(
+            {},
+            provider_id="azure",
+            resource_name="myres",
+            whitelist=["gpt-4o"],
+            disabled_providers=[],
+        )
+        providers = result["provider"]
+        _require(condition=isinstance(providers, dict), message="Expected provider map")
+        typed_providers = cast("dict[str, object]", providers)
+        block = typed_providers["azure"]
+        _require(condition=isinstance(block, dict), message="Expected provider block")
+        typed_block = cast("dict[str, object]", block)
+        options = typed_block["options"]
+        _require(condition=isinstance(options, dict), message="Expected options dict")
+        typed_options = cast("dict[str, object]", options)
+        base_url = str(typed_options["baseURL"])
+        _require(condition=base_url.endswith("/openai"), message="Expected /openai suffix")
+        _require(
+            condition="myres.openai.azure.com" in base_url,
+            message="Expected openai.azure.com host for azure provider",
         )
 
     def test_preserves_existing_config_keys(self) -> None:

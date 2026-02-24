@@ -99,8 +99,8 @@ def build_parser() -> argparse.ArgumentParser:
     setup.add_argument(
         "--disabled-providers",
         nargs="*",
-        default=["azure"],
-        help="Provider IDs to disable.",
+        default=None,
+        help="Provider IDs to disable (default: ['azure'] unless --provider-id is 'azure').",
     )
     setup.add_argument(
         "--key-env",
@@ -265,11 +265,16 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command == "setup":
+        # Derive disabled_providers: if user specified --provider-id azure, don't disable azure
+        disabled = args.disabled_providers
+        if disabled is None:
+            disabled = [] if args.provider_id == "azure" else ["azure"]
+
         params = SetupParams(
             resource_name=args.resource_name,
             provider_id=args.provider_id,
             whitelist=args.whitelist,
-            disabled_providers=args.disabled_providers,
+            disabled_providers=disabled,
             key_env="" if args.key_stdin else args.key_env,
             key_stdin=args.key_stdin,
         )

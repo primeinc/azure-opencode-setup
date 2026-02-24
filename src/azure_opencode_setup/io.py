@@ -129,7 +129,7 @@ def atomic_write_json(
         tmp_path_str = None
 
         if secure:
-            restrict_permissions(path)
+            restrict_permissions(path, strict=True)
 
     finally:
         if fd >= 0:

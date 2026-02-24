@@ -786,22 +786,25 @@ class TestMissingFieldHandling:
         ):
             list_deployments("my-rg", "my-account")
 
-    def test_list_deployments_missing_model_raises_discovery_error(self) -> None:
-        """CRITICAL-2: Missing 'model' field should raise DiscoveryError, not KeyError."""
+    def test_list_deployments_missing_model_returns_empty_model(self) -> None:
+        """Missing 'model' field should return empty string (auto-versioning case)."""
         json_output = json.dumps(
             [
                 {
                     "name": "gpt-4o-deployment",
-                    # "model" is missing
+                    # "model" is missing - this happens with auto-versioning
                 },
             ],
         )
         mock_result = _mock_subprocess_result(stdout=json_output, returncode=0)
-        with (
-            patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result),
-            pytest.raises(DiscoveryError, match=r"missing.*field|malformed|invalid"),
-        ):
-            list_deployments("my-rg", "my-account")
+        with patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result):
+            deployments = list_deployments("my-rg", "my-account")
+            _require(condition=len(deployments) == 1, message="Expected 1 deployment")
+            _require(
+                condition=deployments[0].name == "gpt-4o-deployment",
+                message="Expected deployment name",
+            )
+            _require(condition=deployments[0].model == "", message="Expected empty model string")
 
     def test_list_cognitive_accounts_all_fields_missing_raises_discovery_error(self) -> None:
         """CRITICAL-2: Empty object should raise DiscoveryError, not KeyError."""

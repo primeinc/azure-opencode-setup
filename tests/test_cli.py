@@ -318,3 +318,51 @@ class TestCliMain:
                 condition=params.provider_id == "azure-cognitive-services",
                 message="Expected provider_id",
             )
+
+    def test_main_azure_provider_no_disabled_azure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When --provider-id is 'azure', disabled_providers defaults to [] (not ['azure'])."""
+        monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key-azure")
+
+        argv = [
+            "azure-opencode-setup",
+            "setup",
+            "--resource-name",
+            "testres",
+            "--provider-id",
+            "azure",
+        ]
+        with patch("azure_opencode_setup.cli.run_setup", return_value=0) as mock_run:
+            with patch.object(sys, "argv", argv):
+                with pytest.raises(SystemExit) as exc_info:
+                    main()
+                _require(condition=exc_info.value.code == _EXIT_OK, message="Expected success exit")
+            mock_run.assert_called_once()
+            params = mock_run.call_args[0][0]
+            _require(
+                condition=params.disabled_providers == [],
+                message="Expected empty disabled_providers for azure provider",
+            )
+
+    def test_main_non_azure_provider_disables_azure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When --provider-id is not 'azure', disabled_providers defaults to ['azure']."""
+        monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key-cogs")
+
+        argv = [
+            "azure-opencode-setup",
+            "setup",
+            "--resource-name",
+            "testres",
+            "--provider-id",
+            "azure-cognitive-services",
+        ]
+        with patch("azure_opencode_setup.cli.run_setup", return_value=0) as mock_run:
+            with patch.object(sys, "argv", argv):
+                with pytest.raises(SystemExit) as exc_info:
+                    main()
+                _require(condition=exc_info.value.code == _EXIT_OK, message="Expected success exit")
+            mock_run.assert_called_once()
+            params = mock_run.call_args[0][0]
+            _require(
+                condition=params.disabled_providers == ["azure"],
+                message="Expected ['azure'] disabled_providers for non-azure provider",
+            )
