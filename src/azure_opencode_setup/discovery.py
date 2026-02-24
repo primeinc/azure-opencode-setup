@@ -60,7 +60,10 @@ def _run_az_command(args: list[str]) -> str:
             capture_output=True,
             text=True,
             check=False,
+            timeout=60,
         )
+    except subprocess.TimeoutExpired as exc:
+        raise DiscoveryError(detail="az CLI command timed out.") from exc
     except FileNotFoundError as exc:
         raise DiscoveryError(detail="az CLI not found. Please install Azure CLI.") from exc
 
@@ -174,16 +177,19 @@ def list_cognitive_accounts(subscription_id: str) -> list[CognitiveAccount]:
 
     items = _parse_json_list(output)
 
-    return [
-        CognitiveAccount(
-            name=item["name"],
-            resource_group=item["rg"],
-            endpoint=item["endpoint"],
-            location=item["location"],
-            kind=item["kind"],
-        )
-        for item in items
-    ]
+    try:
+        return [
+            CognitiveAccount(
+                name=item["name"],
+                resource_group=item["rg"],
+                endpoint=item["endpoint"],
+                location=item["location"],
+                kind=item["kind"],
+            )
+            for item in items
+        ]
+    except KeyError as exc:
+        raise DiscoveryError(detail=f"Malformed response: missing field {exc}") from exc
 
 
 def list_deployments(resource_group: str, account_name: str) -> list[Deployment]:
@@ -222,7 +228,10 @@ def list_deployments(resource_group: str, account_name: str) -> list[Deployment]
 
     items = _parse_json_list(output)
 
-    return [Deployment(name=item["name"], model=item["model"]) for item in items]
+    try:
+        return [Deployment(name=item["name"], model=item["model"]) for item in items]
+    except KeyError as exc:
+        raise DiscoveryError(detail=f"Malformed response: missing field {exc}") from exc
 
 
 def get_api_key(resource_group: str, account_name: str) -> str:

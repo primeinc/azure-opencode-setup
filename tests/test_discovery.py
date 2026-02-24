@@ -648,3 +648,261 @@ class TestDataClasses:
         dep1 = Deployment(name="test", model="gpt-4o")
         dep2 = Deployment(name="test", model="gpt-4o")
         _require(condition=dep1 == dep2, message="Expected equality")
+
+
+class TestMissingFieldHandling:
+    """CRITICAL-2: Tests for handling malformed JSON from az CLI.
+
+    The discovery module directly accesses dictionary keys without checking
+    for existence. If Azure CLI returns malformed JSON (missing expected
+    fields), this raises KeyError instead of DiscoveryError.
+    """
+
+    def test_list_cognitive_accounts_missing_name_raises_discovery_error(self) -> None:
+        """CRITICAL-2: Missing 'name' field should raise DiscoveryError, not KeyError.
+
+        Current implementation at discovery.py:177-186 does:
+            name=item["name"]
+        without checking if 'name' exists first.
+        """
+        # JSON with missing 'name' field
+        json_output = json.dumps(
+            [
+                {
+                    # "name" is missing
+                    "kind": "AIServices",
+                    "endpoint": "https://test.cognitiveservices.azure.com/",
+                    "rg": "my-rg",
+                    "location": "eastus",
+                },
+            ],
+        )
+        mock_result = _mock_subprocess_result(stdout=json_output, returncode=0)
+        with (
+            patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result),
+            pytest.raises(DiscoveryError, match=r"missing.*field|malformed|invalid"),
+        ):
+            list_cognitive_accounts("valid-sub-id")
+
+    def test_list_cognitive_accounts_missing_rg_raises_discovery_error(self) -> None:
+        """CRITICAL-2: Missing 'rg' field should raise DiscoveryError, not KeyError."""
+        json_output = json.dumps(
+            [
+                {
+                    "name": "my-account",
+                    "kind": "AIServices",
+                    "endpoint": "https://test.cognitiveservices.azure.com/",
+                    # "rg" is missing
+                    "location": "eastus",
+                },
+            ],
+        )
+        mock_result = _mock_subprocess_result(stdout=json_output, returncode=0)
+        with (
+            patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result),
+            pytest.raises(DiscoveryError, match=r"missing.*field|malformed|invalid"),
+        ):
+            list_cognitive_accounts("valid-sub-id")
+
+    def test_list_cognitive_accounts_missing_endpoint_raises_discovery_error(self) -> None:
+        """CRITICAL-2: Missing 'endpoint' field should raise DiscoveryError, not KeyError."""
+        json_output = json.dumps(
+            [
+                {
+                    "name": "my-account",
+                    "kind": "AIServices",
+                    # "endpoint" is missing
+                    "rg": "my-rg",
+                    "location": "eastus",
+                },
+            ],
+        )
+        mock_result = _mock_subprocess_result(stdout=json_output, returncode=0)
+        with (
+            patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result),
+            pytest.raises(DiscoveryError, match=r"missing.*field|malformed|invalid"),
+        ):
+            list_cognitive_accounts("valid-sub-id")
+
+    def test_list_cognitive_accounts_missing_location_raises_discovery_error(self) -> None:
+        """CRITICAL-2: Missing 'location' field should raise DiscoveryError, not KeyError."""
+        json_output = json.dumps(
+            [
+                {
+                    "name": "my-account",
+                    "kind": "AIServices",
+                    "endpoint": "https://test.cognitiveservices.azure.com/",
+                    "rg": "my-rg",
+                    # "location" is missing
+                },
+            ],
+        )
+        mock_result = _mock_subprocess_result(stdout=json_output, returncode=0)
+        with (
+            patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result),
+            pytest.raises(DiscoveryError, match=r"missing.*field|malformed|invalid"),
+        ):
+            list_cognitive_accounts("valid-sub-id")
+
+    def test_list_cognitive_accounts_missing_kind_raises_discovery_error(self) -> None:
+        """CRITICAL-2: Missing 'kind' field should raise DiscoveryError, not KeyError."""
+        json_output = json.dumps(
+            [
+                {
+                    "name": "my-account",
+                    # "kind" is missing
+                    "endpoint": "https://test.cognitiveservices.azure.com/",
+                    "rg": "my-rg",
+                    "location": "eastus",
+                },
+            ],
+        )
+        mock_result = _mock_subprocess_result(stdout=json_output, returncode=0)
+        with (
+            patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result),
+            pytest.raises(DiscoveryError, match=r"missing.*field|malformed|invalid"),
+        ):
+            list_cognitive_accounts("valid-sub-id")
+
+    def test_list_deployments_missing_name_raises_discovery_error(self) -> None:
+        """CRITICAL-2: Missing 'name' field should raise DiscoveryError, not KeyError.
+
+        Current implementation at discovery.py:225 does:
+            Deployment(name=item["name"], model=item["model"])
+        without checking if fields exist first.
+        """
+        json_output = json.dumps(
+            [
+                {
+                    # "name" is missing
+                    "model": "gpt-4o",
+                },
+            ],
+        )
+        mock_result = _mock_subprocess_result(stdout=json_output, returncode=0)
+        with (
+            patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result),
+            pytest.raises(DiscoveryError, match=r"missing.*field|malformed|invalid"),
+        ):
+            list_deployments("my-rg", "my-account")
+
+    def test_list_deployments_missing_model_raises_discovery_error(self) -> None:
+        """CRITICAL-2: Missing 'model' field should raise DiscoveryError, not KeyError."""
+        json_output = json.dumps(
+            [
+                {
+                    "name": "gpt-4o-deployment",
+                    # "model" is missing
+                },
+            ],
+        )
+        mock_result = _mock_subprocess_result(stdout=json_output, returncode=0)
+        with (
+            patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result),
+            pytest.raises(DiscoveryError, match=r"missing.*field|malformed|invalid"),
+        ):
+            list_deployments("my-rg", "my-account")
+
+    def test_list_cognitive_accounts_all_fields_missing_raises_discovery_error(self) -> None:
+        """CRITICAL-2: Empty object should raise DiscoveryError, not KeyError."""
+        json_output = json.dumps([{}])
+        mock_result = _mock_subprocess_result(stdout=json_output, returncode=0)
+        with (
+            patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result),
+            pytest.raises(DiscoveryError, match=r"missing.*field|malformed|invalid"),
+        ):
+            list_cognitive_accounts("valid-sub-id")
+
+    def test_list_deployments_all_fields_missing_raises_discovery_error(self) -> None:
+        """CRITICAL-2: Empty object should raise DiscoveryError, not KeyError."""
+        json_output = json.dumps([{}])
+        mock_result = _mock_subprocess_result(stdout=json_output, returncode=0)
+        with (
+            patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result),
+            pytest.raises(DiscoveryError, match=r"missing.*field|malformed|invalid"),
+        ):
+            list_deployments("my-rg", "my-account")
+
+
+class TestSubprocessTimeout:
+    """MEDIUM-3: Tests for subprocess timeout handling.
+
+    The discovery module's _run_az_command at lines 58-63 uses subprocess.run()
+    without a timeout parameter. If az CLI hangs, the program hangs indefinitely.
+    """
+
+    def test_list_subscriptions_uses_subprocess_timeout(self) -> None:
+        """MEDIUM-3: subprocess.run must be called with a timeout parameter.
+
+        Current implementation at discovery.py:58-63:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        No timeout is specified, so a hanging az CLI will hang forever.
+        """
+        mock_result = _mock_subprocess_result(stdout="sub-1\n", returncode=0)
+        with patch(
+            "azure_opencode_setup.discovery.subprocess.run",
+            return_value=mock_result,
+        ) as mock_run:
+            list_subscriptions()
+            call_kwargs = mock_run.call_args[1]
+            # FAILING: Current impl has no timeout parameter
+            _require(
+                condition="timeout" in call_kwargs,
+                message=(
+                    "MEDIUM-3: subprocess.run called without timeout parameter. "
+                    "If az CLI hangs, the program hangs indefinitely."
+                ),
+            )
+            _require(
+                condition=call_kwargs.get("timeout") is not None,
+                message="timeout parameter should have a value",
+            )
+
+    def test_list_cognitive_accounts_uses_subprocess_timeout(self) -> None:
+        """MEDIUM-3: list_cognitive_accounts must use subprocess timeout."""
+        mock_result = _mock_subprocess_result(stdout="[]", returncode=0)
+        with patch(
+            "azure_opencode_setup.discovery.subprocess.run",
+            return_value=mock_result,
+        ) as mock_run:
+            list_cognitive_accounts("valid-sub")
+            call_kwargs = mock_run.call_args[1]
+            _require(
+                condition="timeout" in call_kwargs and call_kwargs["timeout"] is not None,
+                message="MEDIUM-3: subprocess.run called without timeout parameter.",
+            )
+
+    def test_list_deployments_uses_subprocess_timeout(self) -> None:
+        """MEDIUM-3: list_deployments must use subprocess timeout."""
+        mock_result = _mock_subprocess_result(stdout="[]", returncode=0)
+        with patch(
+            "azure_opencode_setup.discovery.subprocess.run",
+            return_value=mock_result,
+        ) as mock_run:
+            list_deployments("valid-rg", "valid-name")
+            call_kwargs = mock_run.call_args[1]
+            _require(
+                condition="timeout" in call_kwargs and call_kwargs["timeout"] is not None,
+                message="MEDIUM-3: subprocess.run called without timeout parameter.",
+            )
+
+    def test_get_api_key_uses_subprocess_timeout(self) -> None:
+        """MEDIUM-3: get_api_key must use subprocess timeout."""
+        json_output = json.dumps({"key1": "test", "key2": "test2"})
+        mock_result = _mock_subprocess_result(stdout=json_output, returncode=0)
+        with patch(
+            "azure_opencode_setup.discovery.subprocess.run",
+            return_value=mock_result,
+        ) as mock_run:
+            get_api_key("valid-rg", "valid-name")
+            call_kwargs = mock_run.call_args[1]
+            _require(
+                condition="timeout" in call_kwargs and call_kwargs["timeout"] is not None,
+                message="MEDIUM-3: subprocess.run called without timeout parameter.",
+            )
