@@ -6,7 +6,6 @@ TDD: Written BEFORE implementation.
 from __future__ import annotations
 
 import os
-import shutil
 import sys
 from typing import TYPE_CHECKING
 
@@ -139,48 +138,58 @@ class TestBackupFile:
     ) -> None:
         """VULN-01/02: Backup must be created WITH restricted perms, not after.
 
-        The current implementation has a TOCTOU race:
-          1. shutil.copy2() creates file with inherited permissions
-          2. restrict_permissions() tightens perms AFTER creation
+        On POSIX, the implementation uses os.open() with mode 0o600 to create
+        the backup file atomically with restricted permissions. This prevents
+        TOCTOU races where an attacker could read the file between creation
+        and permission restriction.
 
-        An attacker can read the file in the window between steps 1 and 2.
-        If SIGKILL arrives between steps, backup persists world-readable.
-
-        This test verifies that restrict_permissions is called BEFORE the
-        backup file content is visible to other processes (i.e., perms are
-        set atomically with creation, not as a separate step).
+        This test verifies that os.open is called with O_CREAT|O_EXCL|O_WRONLY
+        and mode 0o600, ensuring atomic secure creation.
         """
-        perms_at_copy_time: list[int] = []
+        original_os_open = os.open
+        open_calls: list[tuple[str, int, int]] = []
 
-        original_copy2 = shutil.copy2
+        def spy_os_open(
+            path: str,
+            flags: int,
+            mode: int = 0o777,
+            *,
+            dir_fd: int | None = None,
+        ) -> int:
+            open_calls.append((path, flags, mode))
+            return original_os_open(path, flags, mode, dir_fd=dir_fd)
 
-        def spy_copy2(src: str, dst: str) -> str:
-            result = original_copy2(src, dst)
-            # Capture perms immediately after copy, before restrict_permissions
-            from pathlib import Path
-
-            mode = Path(dst).stat().st_mode & _MODE_BITS
-            perms_at_copy_time.append(mode)
-            return str(result)
-
-        mocker.patch.object(shutil, "copy2", side_effect=spy_copy2)
+        mocker.patch.object(os, "open", side_effect=spy_os_open)
 
         original = tmp_path / "auth.json"
         original.write_text('{"secret": "value"}', encoding="utf-8")
         original.chmod(0o644)  # World-readable source
 
-        backup_file(original)
+        backup = backup_file(original)
 
-        # FAILING ASSERTION: Current impl creates file with 0o644, then restricts
-        # The file should NEVER exist with permissive perms
+        # Filter to find the backup file creation call
+        backup_open_calls = [c for c in open_calls if ".bak" in c[0]]
         _require(
-            condition=len(perms_at_copy_time) == 1,
-            message="Expected exactly one copy operation",
+            condition=len(backup_open_calls) == 1,
+            message="Expected exactly one os.open call for backup file",
+        )
+
+        _path, flags, mode = backup_open_calls[0]
+        expected_flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+        _require(
+            condition=flags == expected_flags,
+            message=f"Expected flags O_CREAT|O_EXCL|O_WRONLY ({expected_flags}), got {flags}",
         )
         _require(
-            condition=perms_at_copy_time[0] == _MODE_FILE_USER_ONLY,
-            message=f"TOCTOU: Backup was created with perms {oct(perms_at_copy_time[0])}, "
-            f"expected {oct(_MODE_FILE_USER_ONLY)} from creation",
+            condition=mode == _MODE_FILE_USER_ONLY,
+            message=f"Expected mode 0o600, got {oct(mode)}",
+        )
+
+        # Also verify the final file has correct permissions
+        final_mode = backup.stat().st_mode & _MODE_BITS
+        _require(
+            condition=final_mode == _MODE_FILE_USER_ONLY,
+            message=f"Final backup perms {oct(final_mode)}, expected {oct(_MODE_FILE_USER_ONLY)}",
         )
 
     def test_restrict_permissions_failure_raises_when_strict(

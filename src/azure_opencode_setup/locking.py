@@ -73,8 +73,9 @@ def backup_file(path: Path) -> Path:
             os.write(fd, content)
         finally:
             os.close(fd)
-        # Copy metadata (mtime, atime) like copy2
-        shutil.copystat(str(path), str(backup_path))
+        # Copy metadata (mtime, atime) but preserve our restricted permissions
+        src_stat = path.stat()
+        os.utime(str(backup_path), (src_stat.st_atime, src_stat.st_mtime))
 
     return backup_path
 
