@@ -275,8 +275,12 @@ class TestCliMainCoverage:
         """The if __name__ == '__main__' block is covered by direct call."""
         monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
         argv = [
-            "azure-opencode-setup", "setup",
-            "--resource-name", "t", "--provider-id", "p",
+            "azure-opencode-setup",
+            "setup",
+            "--resource-name",
+            "t",
+            "--provider-id",
+            "p",
         ]
         with (
             patch.object(sys, "argv", argv),
@@ -295,9 +299,12 @@ class TestCliMain:
         monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key-main")
 
         argv = [
-            "azure-opencode-setup", "setup",
-            "--resource-name", "testres",
-            "--provider-id", "azure-cognitive-services",
+            "azure-opencode-setup",
+            "setup",
+            "--resource-name",
+            "testres",
+            "--provider-id",
+            "azure-cognitive-services",
         ]
         with patch("azure_opencode_setup.cli.run_setup", return_value=0) as mock_run:
             with patch.object(sys, "argv", argv):

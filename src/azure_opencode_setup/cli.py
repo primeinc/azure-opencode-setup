@@ -138,15 +138,9 @@ def _execute_setup(params: SetupParams) -> int:
         int: Exit code (0, 3, or 4).
     """
     resolved_config = (
-        params.config_path
-        if params.config_path is not None
-        else opencode_config_path()
+        params.config_path if params.config_path is not None else opencode_config_path()
     )
-    resolved_auth = (
-        params.auth_path
-        if params.auth_path is not None
-        else opencode_auth_path()
-    )
+    resolved_auth = params.auth_path if params.auth_path is not None else opencode_auth_path()
 
     try:
         api_key = _obtain_api_key(key_env=params.key_env, key_stdin=params.key_stdin)
