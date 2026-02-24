@@ -11,6 +11,7 @@ import pytest
 
 from azure_opencode_setup.errors import InvalidSchemaError
 from azure_opencode_setup.errors import ValidationError
+from azure_opencode_setup.merge import ProviderMergeSpec
 from azure_opencode_setup.merge import merge_auth
 from azure_opencode_setup.merge import merge_config
 from azure_opencode_setup.merge import validate_resource_name
@@ -87,10 +88,12 @@ class TestMergeConfig:
         """Inserts provider block into config."""
         result = merge_config(
             {},
-            provider_id="azure-cognitive-services",
-            resource_name="myres",
-            whitelist=["gpt-4o"],
-            disabled_providers=["azure"],
+            spec=ProviderMergeSpec(
+                provider_id="azure-cognitive-services",
+                resource_name="myres",
+                whitelist=["gpt-4o"],
+                disabled_providers=["azure"],
+            ),
         )
         _require(condition="provider" in result, message="Expected provider key")
         providers = result["provider"]
@@ -105,10 +108,12 @@ class TestMergeConfig:
         """Constructs baseURL from resource name using cognitiveservices domain."""
         result = merge_config(
             {},
-            provider_id="azure-cognitive-services",
-            resource_name="myres",
-            whitelist=["gpt-4o"],
-            disabled_providers=[],
+            spec=ProviderMergeSpec(
+                provider_id="azure-cognitive-services",
+                resource_name="myres",
+                whitelist=["gpt-4o"],
+                disabled_providers=[],
+            ),
         )
         providers = result["provider"]
         _require(condition=isinstance(providers, dict), message="Expected provider map")
@@ -130,10 +135,12 @@ class TestMergeConfig:
         """Constructs baseURL using openai.azure.com for 'azure' provider."""
         result = merge_config(
             {},
-            provider_id="azure",
-            resource_name="myres",
-            whitelist=["gpt-4o"],
-            disabled_providers=[],
+            spec=ProviderMergeSpec(
+                provider_id="azure",
+                resource_name="myres",
+                whitelist=["gpt-4o"],
+                disabled_providers=[],
+            ),
         )
         providers = result["provider"]
         _require(condition=isinstance(providers, dict), message="Expected provider map")
@@ -156,10 +163,12 @@ class TestMergeConfig:
         existing: dict[str, object] = {"theme": "dark", "extra": _EXTRA_VALUE}
         result = merge_config(
             existing,
-            provider_id="azure-cognitive-services",
-            resource_name="myres",
-            whitelist=["gpt-4o"],
-            disabled_providers=[],
+            spec=ProviderMergeSpec(
+                provider_id="azure-cognitive-services",
+                resource_name="myres",
+                whitelist=["gpt-4o"],
+                disabled_providers=[],
+            ),
         )
         _require(condition=result["theme"] == "dark", message="Expected theme preserved")
         _require(condition=result["extra"] == _EXTRA_VALUE, message="Expected extra preserved")
@@ -171,10 +180,12 @@ class TestMergeConfig:
         }
         result = merge_config(
             existing,
-            provider_id="azure-cognitive-services",
-            resource_name="myres",
-            whitelist=["gpt-4o"],
-            disabled_providers=["azure"],
+            spec=ProviderMergeSpec(
+                provider_id="azure-cognitive-services",
+                resource_name="myres",
+                whitelist=["gpt-4o"],
+                disabled_providers=["azure"],
+            ),
         )
         dp = result["disabled_providers"]
         _require(condition=isinstance(dp, list), message="Expected list")
@@ -189,10 +200,12 @@ class TestMergeConfig:
         }
         result = merge_config(
             existing,
-            provider_id="azure-cognitive-services",
-            resource_name="myres",
-            whitelist=["gpt-4o"],
-            disabled_providers=["azure", "anthropic"],
+            spec=ProviderMergeSpec(
+                provider_id="azure-cognitive-services",
+                resource_name="myres",
+                whitelist=["gpt-4o"],
+                disabled_providers=["azure", "anthropic"],
+            ),
         )
         dp = result["disabled_providers"]
         _require(condition=isinstance(dp, list), message="Expected list")
@@ -206,10 +219,12 @@ class TestMergeConfig:
         }
         result = merge_config(
             existing,
-            provider_id="azure-cognitive-services",
-            resource_name="myres",
-            whitelist=["gpt-4o"],
-            disabled_providers=["m-provider"],
+            spec=ProviderMergeSpec(
+                provider_id="azure-cognitive-services",
+                resource_name="myres",
+                whitelist=["gpt-4o"],
+                disabled_providers=["m-provider"],
+            ),
         )
         dp = result["disabled_providers"]
         _require(condition=isinstance(dp, list), message="Expected list")
@@ -225,10 +240,12 @@ class TestMergeConfig:
         with pytest.raises(InvalidSchemaError):
             merge_config(
                 existing,
-                provider_id="azure-cognitive-services",
-                resource_name="myres",
-                whitelist=["gpt-4o"],
-                disabled_providers=[],
+                spec=ProviderMergeSpec(
+                    provider_id="azure-cognitive-services",
+                    resource_name="myres",
+                    whitelist=["gpt-4o"],
+                    disabled_providers=[],
+                ),
             )
 
     def test_rejects_non_string_item_in_disabled_providers(self) -> None:
@@ -239,10 +256,28 @@ class TestMergeConfig:
         with pytest.raises(InvalidSchemaError, match="non-string"):
             merge_config(
                 existing,
-                provider_id="azure-cognitive-services",
-                resource_name="myres",
-                whitelist=[],
-                disabled_providers=[],
+                spec=ProviderMergeSpec(
+                    provider_id="azure-cognitive-services",
+                    resource_name="myres",
+                    whitelist=[],
+                    disabled_providers=[],
+                ),
+            )
+
+    def test_rejects_non_dict_provider(self) -> None:
+        """Rejects non-dict provider value (e.g., string, list from corruption)."""
+        existing: dict[str, object] = {
+            "provider": "not-a-dict",
+        }
+        with pytest.raises(InvalidSchemaError, match="provider"):
+            merge_config(
+                existing,
+                spec=ProviderMergeSpec(
+                    provider_id="azure-cognitive-services",
+                    resource_name="myres",
+                    whitelist=[],
+                    disabled_providers=[],
+                ),
             )
 
     def test_rejects_invalid_resource_name(self) -> None:
@@ -261,10 +296,12 @@ class TestMergeConfig:
             with pytest.raises(ValidationError, match="resource_name"):
                 merge_config(
                     {},
-                    provider_id="p",
-                    resource_name=name,
-                    whitelist=[],
-                    disabled_providers=[],
+                    spec=ProviderMergeSpec(
+                        provider_id="p",
+                        resource_name=name,
+                        whitelist=[],
+                        disabled_providers=[],
+                    ),
                 )
 
     def test_accepts_valid_resource_names(self) -> None:
@@ -280,10 +317,12 @@ class TestMergeConfig:
         for name in valid_names:
             result = merge_config(
                 {},
-                provider_id="p",
-                resource_name=name,
-                whitelist=[],
-                disabled_providers=[],
+                spec=ProviderMergeSpec(
+                    provider_id="p",
+                    resource_name=name,
+                    whitelist=[],
+                    disabled_providers=[],
+                ),
             )
             _require(condition="provider" in result, message="Expected provider key")
 
@@ -292,20 +331,24 @@ class TestMergeConfig:
         with pytest.raises(ValidationError):
             merge_config(
                 {},
-                provider_id="",
-                resource_name="myres",
-                whitelist=[],
-                disabled_providers=[],
+                spec=ProviderMergeSpec(
+                    provider_id="",
+                    resource_name="myres",
+                    whitelist=[],
+                    disabled_providers=[],
+                ),
             )
 
     def test_whitelist_dedup_preserves_order(self) -> None:
         """Whitelist list is deduped while preserving order."""
         result = merge_config(
             {},
-            provider_id="p",
-            resource_name="myres",
-            whitelist=["model-b", "model-a", "model-b"],
-            disabled_providers=[],
+            spec=ProviderMergeSpec(
+                provider_id="p",
+                resource_name="myres",
+                whitelist=["model-b", "model-a", "model-b"],
+                disabled_providers=[],
+            ),
         )
         providers = result["provider"]
         _require(condition=isinstance(providers, dict), message="Expected provider map")
@@ -324,10 +367,12 @@ class TestMergeConfig:
         original_dp = list(cast("list[str]", existing["disabled_providers"]))
         _ = merge_config(
             existing,
-            provider_id="p",
-            resource_name="myres",
-            whitelist=[],
-            disabled_providers=["openai"],
+            spec=ProviderMergeSpec(
+                provider_id="p",
+                resource_name="myres",
+                whitelist=[],
+                disabled_providers=["openai"],
+            ),
         )
         _require(
             condition=cast("list[str]", existing["disabled_providers"]) == original_dp,
@@ -343,10 +388,12 @@ class TestMergeConfig:
         }
         result = merge_config(
             existing,
-            provider_id="azure-cognitive-services",
-            resource_name="myres",
-            whitelist=["gpt-4o"],
-            disabled_providers=[],
+            spec=ProviderMergeSpec(
+                provider_id="azure-cognitive-services",
+                resource_name="myres",
+                whitelist=["gpt-4o"],
+                disabled_providers=[],
+            ),
         )
         providers = result["provider"]
         _require(condition=isinstance(providers, dict), message="Expected provider map")

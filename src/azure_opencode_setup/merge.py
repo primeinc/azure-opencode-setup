@@ -14,6 +14,7 @@ Design invariants:
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from typing import cast
 
@@ -23,10 +24,23 @@ from azure_opencode_setup.errors import ValidationError
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from azure_opencode_setup.types import ModelEntry
+
 _RESOURCE_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9-]{0,62}[a-zA-Z0-9]$|^[a-zA-Z0-9]$")
 
 _COGS_ENDPOINT_TEMPLATE = "https://{name}.cognitiveservices.azure.com/openai"
 _OPENAI_ENDPOINT_TEMPLATE = "https://{name}.openai.azure.com/openai"
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderMergeSpec:
+    """Inputs required to merge a provider block into opencode.json."""
+
+    provider_id: str
+    resource_name: str
+    whitelist: Sequence[str]
+    disabled_providers: Sequence[str]
+    models: dict[str, ModelEntry] | None = None
 
 
 def validate_resource_name(name: str) -> None:
@@ -85,19 +99,13 @@ def merge_auth(
 def merge_config(
     existing: dict[str, object],
     *,
-    provider_id: str,
-    resource_name: str,
-    whitelist: Sequence[str],
-    disabled_providers: Sequence[str],
+    spec: ProviderMergeSpec,
 ) -> dict[str, object]:
     """Merge provider config into an existing opencode.json dict.
 
     Args:
         existing (dict[str, object]): The current contents of ``opencode.json`` (or ``{}``).
-        provider_id (str): The provider ID to configure.
-        resource_name (str): The Azure resource name (used to construct baseURL).
-        whitelist (Sequence[str]): Model names to whitelist.
-        disabled_providers (Sequence[str]): Provider IDs to disable.
+        spec (ProviderMergeSpec): Inputs required to construct the provider block.
 
     Returns:
         dict[str, object]: A new dict with the provider block merged and all other keys preserved.
@@ -106,14 +114,17 @@ def merge_config(
         ValidationError: If inputs fail validation.
         InvalidSchemaError: If existing ``disabled_providers`` has wrong type.
     """
-    if not provider_id:
+    if not spec.provider_id:
         raise ValidationError(field="provider_id", detail="Must not be empty")
-    validate_resource_name(resource_name)
+    validate_resource_name(spec.resource_name)
 
     result = dict(existing)
 
     try:
-        merged_dp = _merge_disabled_providers(result.get("disabled_providers"), disabled_providers)
+        merged_dp = _merge_disabled_providers(
+            result.get("disabled_providers"),
+            spec.disabled_providers,
+        )
     except InvalidSchemaError as exc:
         raise InvalidSchemaError(path=exc.path, detail=exc.detail) from exc
     result["disabled_providers"] = merged_dp
@@ -122,20 +133,26 @@ def merge_config(
     if isinstance(existing_providers, dict):
         typed_providers = cast("dict[str, object]", existing_providers)
         providers: dict[str, object] = dict(typed_providers)
-    else:
+    elif existing_providers is None:
         providers = {}
+    else:
+        raise InvalidSchemaError(path="provider", detail="Expected object for 'provider'")
 
     # Use correct endpoint domain based on provider type
-    if provider_id == "azure":
-        base_url = _OPENAI_ENDPOINT_TEMPLATE.format(name=resource_name)
+    if spec.provider_id == "azure":
+        base_url = _OPENAI_ENDPOINT_TEMPLATE.format(name=spec.resource_name)
     else:
-        base_url = _COGS_ENDPOINT_TEMPLATE.format(name=resource_name)
-    deduped_whitelist = _dedup_preserve_order(list(whitelist))
+        base_url = _COGS_ENDPOINT_TEMPLATE.format(name=spec.resource_name)
+    deduped_whitelist = _dedup_preserve_order(list(spec.whitelist))
 
-    providers[provider_id] = {
+    provider_block: dict[str, object] = {
         "options": {"baseURL": base_url},
         "whitelist": deduped_whitelist,
     }
+    if spec.models:
+        provider_block["models"] = spec.models
+
+    providers[spec.provider_id] = provider_block
     result["provider"] = providers
 
     return result

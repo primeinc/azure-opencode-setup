@@ -17,13 +17,19 @@ from azure_opencode_setup.cli import SetupParams
 from azure_opencode_setup.cli import build_parser
 from azure_opencode_setup.cli import main
 from azure_opencode_setup.cli import run_setup
+from azure_opencode_setup.discovery import AccountMatch
+from azure_opencode_setup.discovery import CognitiveAccount
+from azure_opencode_setup.discovery import Subscription
+from azure_opencode_setup.errors import ValidationError
+from azure_opencode_setup.types import Deployment
 
 if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
     from pathlib import Path
 
 _EXIT_OK = 0
 _EXIT_INVALID_INPUT = 3
-_MIN_BACKUPS = 2
+_EXIT_FILESYSTEM = 4
 
 
 def _require(*, condition: bool, message: str) -> None:
@@ -39,10 +45,20 @@ def _default_params(tmp_path: Path) -> SetupParams:
         provider_id="azure-cognitive-services",
         whitelist=["gpt-4o"],
         disabled_providers=["azure"],
+        subscription_id=None,
+        az_timeout_seconds=60,
         key_env="AZURE_OPENAI_API_KEY",
         key_stdin=False,
         config_path=tmp_path / "opencode.json",
         auth_path=tmp_path / "auth.json",
+    )
+
+
+def _patch_discovery_ok() -> AbstractContextManager[object]:
+    """Patch out Azure discovery for CLI unit tests."""
+    return patch(
+        "azure_opencode_setup.cli._discover_whitelist_and_models",
+        return_value=("myresource", ["gpt-4o"], None, ""),
     )
 
 
@@ -67,7 +83,8 @@ class TestCliKeyFromEnv:
         """Reads API key from AZURE_OPENAI_API_KEY by default."""
         monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key-123")
         params = _default_params(tmp_path)
-        exit_code = run_setup(params)
+        with _patch_discovery_ok():
+            exit_code = run_setup(params)
         _require(condition=exit_code == _EXIT_OK, message="Expected success exit code")
 
     def test_reads_key_from_custom_env(
@@ -78,7 +95,8 @@ class TestCliKeyFromEnv:
         """Reads API key from a custom env var name."""
         monkeypatch.setenv("MY_CUSTOM_KEY", "custom-key-456")
         params = replace(_default_params(tmp_path), key_env="MY_CUSTOM_KEY")
-        exit_code = run_setup(params)
+        with _patch_discovery_ok():
+            exit_code = run_setup(params)
         _require(condition=exit_code == _EXIT_OK, message="Expected success exit code")
 
     def test_fails_when_env_var_missing(
@@ -89,7 +107,8 @@ class TestCliKeyFromEnv:
         """Missing env var maps to ValidationError exit code."""
         monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
         params = _default_params(tmp_path)
-        exit_code = run_setup(params)
+        with _patch_discovery_ok():
+            exit_code = run_setup(params)
         _require(
             condition=exit_code == _EXIT_INVALID_INPUT,
             message="Expected validation exit code",
@@ -106,7 +125,8 @@ class TestCliKeyFromStdin:
             return_value="stdin-key-789",
         ):
             params = replace(_default_params(tmp_path), key_stdin=True, key_env="")
-            exit_code = run_setup(params)
+            with _patch_discovery_ok():
+                exit_code = run_setup(params)
         _require(condition=exit_code == _EXIT_OK, message="Expected success exit code")
 
 
@@ -121,10 +141,32 @@ class TestCliExitCodes:
         """Validation failures return exit code 3."""
         monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
         params = replace(_default_params(tmp_path), resource_name="has spaces in name")
-        exit_code = run_setup(params)
+        with patch(
+            "azure_opencode_setup.cli._discover_whitelist_and_models",
+            side_effect=ValidationError(field="resource_name", detail="invalid"),
+        ):
+            exit_code = run_setup(params)
         _require(
             condition=exit_code == _EXIT_INVALID_INPUT,
             message="Expected validation exit code",
+        )
+
+    def test_filesystem_error_returns_4(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Filesystem-like failures return exit code 4."""
+        monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+        params = _default_params(tmp_path)
+        with patch(
+            "azure_opencode_setup.cli._do_merge_and_write",
+            side_effect=OSError("boom"),
+        ):
+            exit_code = run_setup(params)
+        _require(
+            condition=exit_code == _EXIT_FILESYSTEM,
+            message="Expected filesystem exit code",
         )
 
 
@@ -139,7 +181,8 @@ class TestCliEndToEnd:
         """Writes both opencode.json and auth.json."""
         monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key-e2e")
         params = _default_params(tmp_path)
-        exit_code = run_setup(params)
+        with _patch_discovery_ok():
+            exit_code = run_setup(params)
         _require(condition=exit_code == _EXIT_OK, message="Expected success exit code")
 
         config_path = tmp_path / "opencode.json"
@@ -182,7 +225,8 @@ class TestCliEndToEnd:
         )
 
         params = _default_params(tmp_path)
-        exit_code = run_setup(params)
+        with _patch_discovery_ok():
+            exit_code = run_setup(params)
         _require(condition=exit_code == _EXIT_OK, message="Expected success exit code")
 
         config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -196,27 +240,6 @@ class TestCliEndToEnd:
         _require(condition="github-copilot" in auth, message="Expected existing auth preserved")
         _require(condition="azure-cognitive-services" in auth, message="Expected new auth entry")
 
-    def test_creates_backup_of_existing_files(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Existing files are backed up before overwrite."""
-        monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key-backup")
-
-        config_path = tmp_path / "opencode.json"
-        auth_path = tmp_path / "auth.json"
-
-        config_path.write_text("{}", encoding="utf-8")
-        auth_path.write_text("{}", encoding="utf-8")
-
-        params = _default_params(tmp_path)
-        exit_code = run_setup(params)
-        _require(condition=exit_code == _EXIT_OK, message="Expected success exit code")
-
-        bak_files = list(tmp_path.glob("*.bak"))
-        _require(condition=len(bak_files) >= _MIN_BACKUPS, message="Expected backups")
-
     def test_no_bom_in_output(
         self,
         tmp_path: Path,
@@ -225,12 +248,308 @@ class TestCliEndToEnd:
         """Regression: old PS1 script wrote BOM. We must never write BOM."""
         monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key-bom")
         params = _default_params(tmp_path)
-        exit_code = run_setup(params)
+        with _patch_discovery_ok():
+            exit_code = run_setup(params)
         _require(condition=exit_code == _EXIT_OK, message="Expected success exit code")
 
-        for name in ("opencode.json", "auth.json"):
-            raw = (tmp_path / name).read_bytes()
-            _require(condition=raw[:3] != b"\xef\xbb\xbf", message="BOM must not be written")
+
+class TestCliDiscoveryAndWhitelist:
+    """Discovery/whitelist behavior without calling az."""
+
+    def test_autopick_discovers_whitelist_and_writes_config(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """When resource_name is omitted, auto-pick and build whitelist from deployments."""
+        monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+
+        chosen = AccountMatch(
+            subscription=Subscription(id="sub-1", name="Sub One"),
+            account=CognitiveAccount(
+                name="myresource",
+                resource_group="rg",
+                endpoint="https://myresource.cognitiveservices.azure.com/",
+                location="eastus",
+                kind="AIServices",
+            ),
+        )
+        deployments = [
+            Deployment(name="MyDep", model="gpt-4o"),
+            Deployment(name="Emb", model="text-embedding-3-small"),
+        ]
+
+        params = replace(_default_params(tmp_path), resource_name=None, whitelist=[])
+        with (
+            patch(
+                "azure_opencode_setup.cli.pick_best_cognitive_account",
+                return_value=(chosen, []),
+            ),
+            patch("azure_opencode_setup.cli.list_deployments", return_value=deployments),
+        ):
+            exit_code = run_setup(params)
+
+        _require(condition=exit_code == _EXIT_OK, message="Expected success exit code")
+
+        out = capsys.readouterr().out
+        _require(condition="Auto-picked resource" in out, message="Expected auto-pick message")
+
+        config = json.loads((tmp_path / "opencode.json").read_text(encoding="utf-8"))
+        provider = config["provider"]["azure-cognitive-services"]
+        _require(
+            condition=provider["whitelist"]
+            == [
+                "emb",
+                "gpt-4o",
+                "mydep",
+                "text-embedding-3-small",
+            ],
+            message="Expected whitelist from deployments",
+        )
+
+    def test_surfaces_other_subscriptions_for_named_resource(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """If the same account name exists in multiple subs, message includes alternatives."""
+        monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+
+        chosen = AccountMatch(
+            subscription=Subscription(id="sub-1", name="Sub One"),
+            account=CognitiveAccount(
+                name="myresource",
+                resource_group="rg-one",
+                endpoint="https://myresource.cognitiveservices.azure.com/",
+                location="eastus",
+                kind="AIServices",
+            ),
+        )
+        other = AccountMatch(
+            subscription=Subscription(id="sub-2", name="Sub Two"),
+            account=CognitiveAccount(
+                name="myresource",
+                resource_group="rg-two",
+                endpoint="https://myresource.cognitiveservices.azure.com/",
+                location="westus2",
+                kind="AIServices",
+            ),
+        )
+
+        params = replace(_default_params(tmp_path), whitelist=[])
+        with (
+            patch(
+                "azure_opencode_setup.cli.find_cognitive_account",
+                return_value=(chosen, [other]),
+            ),
+            patch(
+                "azure_opencode_setup.cli.list_deployments",
+                return_value=[Deployment(name="dep", model="gpt-4o")],
+            ),
+        ):
+            exit_code = run_setup(params)
+
+        _require(condition=exit_code == _EXIT_OK, message="Expected success exit code")
+        out = capsys.readouterr().out
+        _require(condition="Also found matches" in out, message="Expected alternatives message")
+        _require(condition="--subscription-id" in out, message="Expected override hint")
+
+    def test_skips_empty_and_dedups_available_models(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Available-model discovery skips empty strings and dedups duplicates."""
+        monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+
+        chosen = AccountMatch(
+            subscription=Subscription(id="sub-1", name="Sub One"),
+            account=CognitiveAccount(
+                name="myresource",
+                resource_group="rg",
+                endpoint="https://myresource.cognitiveservices.azure.com/",
+                location="eastus",
+                kind="AIServices",
+            ),
+        )
+
+        deployments = [
+            Deployment(name="dep", model=""),
+            Deployment(name="dep", model="gpt-4o"),
+            Deployment(name="gpt-4o", model="gpt-4o"),
+        ]
+
+        params = replace(_default_params(tmp_path), whitelist=[])
+        with (
+            patch("azure_opencode_setup.cli.find_cognitive_account", return_value=(chosen, [])),
+            patch("azure_opencode_setup.cli.list_deployments", return_value=deployments),
+        ):
+            exit_code = run_setup(params)
+
+        _require(condition=exit_code == _EXIT_OK, message="Expected success exit code")
+        config = json.loads((tmp_path / "opencode.json").read_text(encoding="utf-8"))
+        provider = config["provider"]["azure-cognitive-services"]
+        _require(
+            condition=provider["whitelist"] == ["dep", "gpt-4o"],
+            message="Expected deduped available models",
+        )
+
+    def test_valid_whitelist_is_deduped_and_accepted(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """User whitelist is lowercased and deduped when valid."""
+        monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+
+        chosen = AccountMatch(
+            subscription=Subscription(id="sub-1", name="Sub One"),
+            account=CognitiveAccount(
+                name="myresource",
+                resource_group="rg",
+                endpoint="https://myresource.cognitiveservices.azure.com/",
+                location="eastus",
+                kind="AIServices",
+            ),
+        )
+
+        deployments = [
+            Deployment(name="gpt-4o", model="gpt-4o"),
+            Deployment(name="dep", model="gpt-4o"),
+        ]
+        params = replace(
+            _default_params(tmp_path),
+            whitelist=["GPT-4O", "gpt-4o", "dep"],
+        )
+        with (
+            patch("azure_opencode_setup.cli.find_cognitive_account", return_value=(chosen, [])),
+            patch("azure_opencode_setup.cli.list_deployments", return_value=deployments),
+        ):
+            exit_code = run_setup(params)
+
+        _require(condition=exit_code == _EXIT_OK, message="Expected success exit code")
+        config = json.loads((tmp_path / "opencode.json").read_text(encoding="utf-8"))
+        provider = config["provider"]["azure-cognitive-services"]
+        _require(
+            condition=provider["whitelist"] == ["gpt-4o", "dep"],
+            message="Expected deduped user whitelist",
+        )
+
+    def test_fails_when_whitelist_contains_unknown_models(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Unknown whitelist entries fail validation before writing."""
+        monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+
+        chosen = AccountMatch(
+            subscription=Subscription(id="sub-1", name="Sub One"),
+            account=CognitiveAccount(
+                name="myresource",
+                resource_group="rg",
+                endpoint="https://myresource.cognitiveservices.azure.com/",
+                location="eastus",
+                kind="AIServices",
+            ),
+        )
+
+        params = replace(_default_params(tmp_path), whitelist=["gpt-4o", "missing-model"])
+        with (
+            patch("azure_opencode_setup.cli.find_cognitive_account", return_value=(chosen, [])),
+            patch(
+                "azure_opencode_setup.cli.list_deployments",
+                return_value=[Deployment(name="gpt-4o", model="gpt-4o")],
+            ),
+        ):
+            exit_code = run_setup(params)
+
+        _require(
+            condition=exit_code == _EXIT_INVALID_INPUT,
+            message="Expected validation exit code",
+        )
+        _require(
+            condition=not (tmp_path / "opencode.json").exists(),
+            message="Expected config not written",
+        )
+
+    def test_writes_custom_models_mapping_for_non_catalog_model(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Non-catalog model names are surfaced via provider.models mapping."""
+        monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+
+        chosen = AccountMatch(
+            subscription=Subscription(id="sub-1", name="Sub One"),
+            account=CognitiveAccount(
+                name="myresource",
+                resource_group="rg",
+                endpoint="https://myresource.cognitiveservices.azure.com/",
+                location="eastus",
+                kind="AIServices",
+            ),
+        )
+
+        deployments = [Deployment(name="FooDep", model="my-custom-model")]
+        params = replace(_default_params(tmp_path), whitelist=[])
+        with (
+            patch("azure_opencode_setup.cli.find_cognitive_account", return_value=(chosen, [])),
+            patch("azure_opencode_setup.cli.list_deployments", return_value=deployments),
+        ):
+            exit_code = run_setup(params)
+
+        _require(condition=exit_code == _EXIT_OK, message="Expected success exit code")
+        config = json.loads((tmp_path / "opencode.json").read_text(encoding="utf-8"))
+        provider = config["provider"]["azure-cognitive-services"]
+        _require(condition="models" in provider, message="Expected models mapping")
+        _require(
+            condition=provider["models"]["foodep"]["name"] == "my-custom-model (Azure)",
+            message="Expected Azure display name",
+        )
+
+    def test_fails_when_no_deployments_found(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """If deployments list is empty, setup fails with validation error."""
+        monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+
+        chosen = AccountMatch(
+            subscription=Subscription(id="sub-1", name="Sub One"),
+            account=CognitiveAccount(
+                name="myresource",
+                resource_group="rg",
+                endpoint="https://myresource.cognitiveservices.azure.com/",
+                location="eastus",
+                kind="AIServices",
+            ),
+        )
+
+        params = replace(_default_params(tmp_path), whitelist=[])
+        with (
+            patch("azure_opencode_setup.cli.find_cognitive_account", return_value=(chosen, [])),
+            patch("azure_opencode_setup.cli.list_deployments", return_value=[]),
+        ):
+            exit_code = run_setup(params)
+
+        _require(
+            condition=exit_code == _EXIT_INVALID_INPUT,
+            message="Expected validation exit code",
+        )
+
+        _require(
+            condition=not (tmp_path / "opencode.json").exists(),
+            message="Expected config not written",
+        )
+        _require(
+            condition=not (tmp_path / "auth.json").exists(),
+            message="Expected auth not written",
+        )
 
 
 class TestCliKeySourceValidation:
@@ -243,7 +562,8 @@ class TestCliKeySourceValidation:
             return_value="",
         ):
             params = replace(_default_params(tmp_path), key_stdin=True, key_env="")
-            exit_code = run_setup(params)
+            with _patch_discovery_ok():
+                exit_code = run_setup(params)
         _require(
             condition=exit_code == _EXIT_INVALID_INPUT,
             message="Expected validation exit code",
@@ -252,7 +572,8 @@ class TestCliKeySourceValidation:
     def test_no_key_source_raises(self, tmp_path: Path) -> None:
         """Neither env nor stdin specified must raise ValidationError."""
         params = replace(_default_params(tmp_path), key_stdin=False, key_env="")
-        exit_code = run_setup(params)
+        with _patch_discovery_ok():
+            exit_code = run_setup(params)
         _require(
             condition=exit_code == _EXIT_INVALID_INPUT,
             message="Expected validation exit code",

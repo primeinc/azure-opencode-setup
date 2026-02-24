@@ -7,6 +7,8 @@ They are the single source of truth for the merge logic and CLI.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import NotRequired
+from typing import Required
 from typing import TypedDict
 
 
@@ -67,14 +69,28 @@ class ProviderOptions(TypedDict):
     baseURL: str
 
 
-class ModelEntry(TypedDict):
+class ModelApi(TypedDict):
+    """API routing metadata for a model.
+
+    Attributes:
+        id (str): Provider-specific API model/deployment identifier.
+        npm (str): Provider implementation package identifier.
+    """
+
+    id: str
+    npm: str
+
+
+class ModelEntry(TypedDict, total=False):
     """A single custom model entry inside a provider config.
 
     Attributes:
         name (str): Display name for the model.
+        api (ModelApi): Optional API override (e.g., deployment casing/mapping).
     """
 
-    name: str
+    name: Required[str]
+    api: NotRequired[ModelApi]
 
 
 class ProviderConfig(TypedDict, total=False):

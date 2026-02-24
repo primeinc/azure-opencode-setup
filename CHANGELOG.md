@@ -21,7 +21,6 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 - Added `SECURITY.md` with threat model, defaults, and reporting guidance.
 - Added `LICENSE` (MIT) to match README license claim.
-- Added `checksums.txt` (SHA-256) for core setup scripts.
 - Updated `references/verify-endpoint.md` to use API version `2024-10-21` and safer curl key handling (`--config` stdin).
 - Updated dry-run outputs and docs to reflect no-env default and optional persistence.
 

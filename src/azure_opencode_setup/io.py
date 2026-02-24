@@ -13,6 +13,7 @@ import ctypes
 import json
 import logging
 import os
+import re
 import stat
 import sys
 import tempfile
@@ -48,6 +49,31 @@ if TYPE_CHECKING:
 _logger = logging.getLogger(__name__)
 
 
+def _strip_jsonc_comments(text: str) -> str:
+    """Strip single-line // comments from JSONC text.
+
+    OpenCode config files support JSON with Comments (JSONC). This function
+    removes // comments while preserving strings that contain //.
+
+    Args:
+        text: JSON or JSONC text.
+
+    Returns:
+        JSON text with comments removed.
+    """
+    # Match strings first to skip them, then match // comments to remove
+    # Pattern: "..." strings (with escaped quotes) OR // comments to end of line
+    pattern = r'"(?:[^"\\]|\\.)*"|//[^\n]*'
+
+    def replacer(match: re.Match[str]) -> str:
+        s = match.group(0)
+        if s.startswith('"'):
+            return s  # Keep strings
+        return ""  # Remove comments
+
+    return re.sub(pattern, replacer, text)
+
+
 def read_json_object(path: Path) -> dict[str, object]:
     """Read a JSON file and return its contents as a dict.
 
@@ -69,6 +95,9 @@ def read_json_object(path: Path) -> dict[str, object]:
     except OSError as exc:
         msg = str(exc)
         raise InvalidJsonError(path=str(path), detail=msg) from exc
+
+    # Strip JSONC comments before parsing
+    text = _strip_jsonc_comments(text)
 
     try:
         parsed = json.loads(text)
@@ -161,7 +190,12 @@ def restrict_permissions(path: Path, *, strict: bool = False) -> None:
     if sys.platform == "win32":
         _restrict_windows_acl(path, strict=strict)
     else:
-        path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        try:
+            path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            if strict:
+                raise
+            _logger.debug("Failed to restrict permissions for %s", path)
 
 
 def _cleanup_tmp(tmp_path_str: str) -> None:

@@ -50,5 +50,5 @@ def ensure_parent_dir(target: Path, *, secure: bool = False) -> None:
     parent = target.parent
     parent.mkdir(parents=True, exist_ok=True)
 
-    if secure and sys.platform != "win32":
+    if secure and sys.platform != "win32":  # pragma: no cover (POSIX-only)
         parent.chmod(0o700)

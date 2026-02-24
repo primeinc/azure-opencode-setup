@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.12"
 
 [[package]]
@@ -20,7 +20,6 @@ name = "azure-opencode-setup"
 version = "0.1.2"
 source = { editable = "." }
 dependencies = [
-    { name = "httpx" },
     { name = "portalocker" },
 ]
 
@@ -41,10 +40,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "httpx", specifier = ">=0.28.1" },
-    { name = "portalocker", specifier = ">=3.2.0" },
-]
+requires-dist = [{ name = "portalocker", specifier = ">=3.2.0" }]
 
 [package.metadata.requires-dev]
 dev = [

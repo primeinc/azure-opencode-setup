@@ -60,6 +60,28 @@ class TestReadJsonObject:
         result = read_json_object(p)
         _require(condition=result == {"foo": "bar"}, message="Expected JSON object")
 
+    def test_reads_jsonc_with_comments(self, tmp_path: Path) -> None:
+        """Reads JSONC (JSON with Comments) used by OpenCode config files."""
+        p = tmp_path / "config.json"
+        jsonc_content = """{
+            "model": "gpt-4o",
+            // This is a comment
+            "provider": {
+                "azure": {} // inline comment
+            }
+        }"""
+        p.write_text(jsonc_content, encoding="utf-8")
+        result = read_json_object(p)
+        _require(condition=result["model"] == "gpt-4o", message="Expected model")
+        _require(condition="provider" in result, message="Expected provider")
+
+    def test_preserves_url_with_double_slash(self, tmp_path: Path) -> None:
+        """Does not strip // inside strings (e.g., URLs)."""
+        p = tmp_path / "config.json"
+        p.write_text('{"url": "https://example.com"}', encoding="utf-8")
+        result = read_json_object(p)
+        _require(condition=result["url"] == "https://example.com", message="URL preserved")
+
     def test_reads_bom_prefixed_json(self, tmp_path: Path) -> None:
         """BOM-healing: old PS1 script wrote UTF-8 BOM. Must survive."""
         p = tmp_path / "bom.json"

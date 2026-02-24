@@ -7,15 +7,19 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
 import pytest
 
+from azure_opencode_setup.discovery import Subscription
+from azure_opencode_setup.discovery import find_cognitive_account
 from azure_opencode_setup.discovery import get_api_key
 from azure_opencode_setup.discovery import list_cognitive_accounts
 from azure_opencode_setup.discovery import list_deployments
 from azure_opencode_setup.discovery import list_subscriptions
+from azure_opencode_setup.discovery import pick_best_cognitive_account
 from azure_opencode_setup.errors import DiscoveryError
 from azure_opencode_setup.errors import ValidationError
 from azure_opencode_setup.types import CognitiveAccount
@@ -40,6 +44,18 @@ def _mock_subprocess_result(
     result.stderr = stderr
     result.returncode = returncode
     return result
+
+
+def _assert_az_command(*, cmd: list[str], contains: list[str]) -> None:
+    if sys.platform == "win32":
+        _require(condition=cmd[:3] == ["cmd.exe", "/c", "az"], message="Expected cmd.exe /c az")
+        haystack = cmd[3:]
+    else:
+        _require(condition=cmd[0] == "az", message="Expected az command")
+        haystack = cmd[1:]
+
+    for token in contains:
+        _require(condition=token in haystack, message=f"Expected {token} in az args")
 
 
 class TestListSubscriptions:
@@ -110,9 +126,304 @@ class TestListSubscriptions:
             mock_run.assert_called_once()
             call_args = mock_run.call_args
             cmd = call_args[0][0]
-            _require(condition=cmd[0] == "az", message="Expected az command")
-            _require(condition="account" in cmd, message="Expected account subcommand")
-            _require(condition="list" in cmd, message="Expected list subcommand")
+            _assert_az_command(cmd=cmd, contains=["account", "list"])
+
+
+class TestRunAzCommand:
+    """Unit tests for Windows/POSIX az invocation wrapper."""
+
+    def test_raises_discovery_error_on_timeout(self) -> None:
+        """TimeoutExpired becomes a DiscoveryError."""
+
+        def _timeout(*_args: object, **_kwargs: object) -> MagicMock:
+            raise subprocess.TimeoutExpired(cmd=["az"], timeout=1)
+
+        with (
+            patch("azure_opencode_setup.discovery.subprocess.run", side_effect=_timeout),
+            pytest.raises(DiscoveryError, match="timed out"),
+        ):
+            list_subscriptions()
+
+    def test_uses_direct_az_on_non_windows(self) -> None:
+        """Non-win32 uses ["az", ...] (no cmd.exe wrapper)."""
+        mock_result = _mock_subprocess_result(stdout="sub-1\n", returncode=0)
+        with (
+            patch("azure_opencode_setup.discovery.sys.platform", "linux"),
+            patch(
+                "azure_opencode_setup.discovery.subprocess.run",
+                return_value=mock_result,
+            ) as mock_run,
+        ):
+            _ = list_subscriptions()
+
+        cmd = mock_run.call_args[0][0]
+        _require(condition=cmd[0] == "az", message="Expected direct az command")
+
+
+class TestFindCognitiveAccount:
+    """Behavior tests for find_cognitive_account across subscriptions."""
+
+    def test_picks_match_with_most_deployments(self) -> None:
+        """When multiple subscriptions have the same account name, pick most deployments."""
+        timeout = 5
+        subs = [
+            Subscription(id="sub-1", name="Sub One"),
+            Subscription(id="sub-2", name="Sub Two"),
+        ]
+
+        def fake_run(args: list[str], *, timeout_seconds: int = 60) -> str:
+            _require(
+                condition=timeout_seconds == timeout,
+                message="Expected timeout to flow through",
+            )
+            if args[:3] != ["cognitiveservices", "account", "list"]:
+                pytest.fail(f"Unexpected args: {args}")
+
+            sub_id = args[args.index("--subscription") + 1]
+            rg_by_sub = {"sub-1": "rg-one", "sub-2": "rg-two"}
+            location_by_sub = {"sub-1": "eastus", "sub-2": "westus2"}
+            if sub_id not in rg_by_sub:
+                pytest.fail(f"Unexpected subscription: {sub_id}")
+
+            return json.dumps(
+                [
+                    {
+                        "name": "acct",
+                        "kind": "AIServices",
+                        "endpoint": "https://acct.cognitiveservices.azure.com/",
+                        "rg": rg_by_sub[sub_id],
+                        "location": location_by_sub[sub_id],
+                    },
+                ],
+            )
+
+        def fake_deployments(
+            rg: str,
+            name: str,
+            *,
+            subscription_id: str | None = None,
+            timeout_seconds: int = 60,
+        ) -> list[Deployment]:
+            _ = timeout_seconds
+            _ = subscription_id
+            _require(condition=name == "acct", message="Expected account name")
+            if rg == "rg-one":
+                return [Deployment(name="dep1", model="gpt-4o")]
+            if rg == "rg-two":
+                return [
+                    Deployment(name="dep1", model="gpt-4o"),
+                    Deployment(name="dep2", model="gpt-4.1"),
+                ]
+            return []
+
+        with (
+            patch("azure_opencode_setup.discovery.list_subscriptions_detailed", return_value=subs),
+            patch("azure_opencode_setup.discovery._run_az_command", side_effect=fake_run),
+            patch("azure_opencode_setup.discovery.list_deployments", side_effect=fake_deployments),
+        ):
+            chosen, others = find_cognitive_account("acct", timeout_seconds=timeout)
+
+        _require(condition=chosen.subscription.id == "sub-2", message="Expected sub-2 chosen")
+        _require(condition=len(others) == 1, message="Expected one alternative")
+
+    def test_scopes_to_subscription_when_provided(self) -> None:
+        """When subscription_id is set, do not enumerate all subscriptions."""
+        timeout = 5
+        subs = [Subscription(id="sub-1", name="Sub One")]
+
+        def fake_run(args: list[str], *, timeout_seconds: int = 60) -> str:
+            _ = timeout_seconds
+            if args[:3] == ["cognitiveservices", "account", "list"]:
+                return json.dumps(
+                    [
+                        {
+                            "name": "acct",
+                            "kind": "AIServices",
+                            "endpoint": "https://acct.cognitiveservices.azure.com/",
+                            "rg": "rg-one",
+                            "location": "eastus",
+                        },
+                    ],
+                )
+            pytest.fail(f"Unexpected args: {args}")
+
+        with (
+            patch(
+                "azure_opencode_setup.discovery.list_subscriptions_detailed",
+                side_effect=AssertionError("Should not enumerate subscriptions"),
+            ),
+            patch("azure_opencode_setup.discovery._run_az_command", side_effect=fake_run),
+            patch("azure_opencode_setup.discovery.list_deployments", return_value=[]),
+        ):
+            chosen, others = find_cognitive_account(
+                "acct",
+                subscription_id="sub-1",
+                timeout_seconds=timeout,
+            )
+
+        _require(condition=chosen.subscription.id == subs[0].id, message="Expected scoped sub")
+        _require(condition=others == [], message="Expected no alternatives")
+
+
+class TestPickBestCognitiveAccount:
+    """Behavior tests for pick_best_cognitive_account."""
+
+    def test_picks_account_with_most_deployments(self) -> None:
+        """Auto-pick prefers the account with highest deployment count."""
+        timeout = 5
+        subs = [
+            Subscription(id="sub-1", name="Sub One"),
+            Subscription(id="sub-2", name="Sub Two"),
+        ]
+
+        def fake_accounts(sub_id: str, *, timeout_seconds: int = 60) -> list[CognitiveAccount]:
+            _ = timeout_seconds
+            if sub_id == "sub-1":
+                return [
+                    CognitiveAccount(
+                        name="acct-a",
+                        resource_group="rg-a",
+                        endpoint="https://acct-a.cognitiveservices.azure.com/",
+                        location="eastus",
+                        kind="AIServices",
+                    ),
+                ]
+            return [
+                CognitiveAccount(
+                    name="acct-b",
+                    resource_group="rg-b",
+                    endpoint="https://acct-b.cognitiveservices.azure.com/",
+                    location="westus2",
+                    kind="AIServices",
+                ),
+            ]
+
+        def fake_deployments(
+            rg: str,
+            name: str,
+            *,
+            subscription_id: str | None = None,
+            timeout_seconds: int = 60,
+        ) -> list[Deployment]:
+            _ = rg
+            _ = timeout_seconds
+            _ = subscription_id
+            if name == "acct-a":
+                return [Deployment(name="d1", model="gpt-4o")]
+            if name == "acct-b":
+                return [
+                    Deployment(name="d1", model="gpt-4o"),
+                    Deployment(name="d2", model="gpt-4.1"),
+                    Deployment(name="d3", model="text-embedding-3-small"),
+                ]
+            return []
+
+        with (
+            patch("azure_opencode_setup.discovery.list_subscriptions_detailed", return_value=subs),
+            patch(
+                "azure_opencode_setup.discovery.list_cognitive_accounts",
+                side_effect=fake_accounts,
+            ),
+            patch("azure_opencode_setup.discovery.list_deployments", side_effect=fake_deployments),
+        ):
+            chosen, others = pick_best_cognitive_account(timeout_seconds=timeout)
+
+        _require(condition=chosen.account.name == "acct-b", message="Expected acct-b chosen")
+        _require(condition=len(others) >= 1, message="Expected other candidates")
+
+    def test_scopes_to_subscription_when_provided(self) -> None:
+        """subscription_id bypasses list_subscriptions_detailed."""
+        with (
+            patch(
+                "azure_opencode_setup.discovery.list_subscriptions_detailed",
+                side_effect=AssertionError("should not enumerate subscriptions"),
+            ),
+            patch(
+                "azure_opencode_setup.discovery.list_cognitive_accounts",
+                return_value=[
+                    CognitiveAccount(
+                        name="acct",
+                        resource_group="rg",
+                        endpoint="https://acct.cognitiveservices.azure.com/",
+                        location="eastus",
+                        kind="AIServices",
+                    ),
+                ],
+            ),
+            patch(
+                "azure_opencode_setup.discovery.list_deployments",
+                return_value=[Deployment(name="d", model="gpt-4o")],
+            ),
+        ):
+            chosen, others = pick_best_cognitive_account(subscription_id="sub-1", timeout_seconds=5)
+
+        _require(
+            condition=chosen.subscription.id == "sub-1",
+            message="Expected scoped subscription",
+        )
+        _require(condition=others == [], message="Expected no other candidates")
+
+    def test_treats_deployment_errors_as_zero(self) -> None:
+        """Deployment list failures are treated as 0 deployments."""
+        subs = [Subscription(id="sub-1", name="Sub One"), Subscription(id="sub-2", name="Sub Two")]
+
+        def fake_accounts(sub_id: str, *, timeout_seconds: int = 60) -> list[CognitiveAccount]:
+            _ = timeout_seconds
+            if sub_id == "sub-1":
+                return [
+                    CognitiveAccount(
+                        name="acct-a",
+                        resource_group="rg-a",
+                        endpoint="https://acct-a.cognitiveservices.azure.com/",
+                        location="eastus",
+                        kind="AIServices",
+                    ),
+                ]
+            return [
+                CognitiveAccount(
+                    name="acct-b",
+                    resource_group="rg-b",
+                    endpoint="https://acct-b.cognitiveservices.azure.com/",
+                    location="westus2",
+                    kind="AIServices",
+                ),
+            ]
+
+        def fake_deployments(
+            rg: str,
+            name: str,
+            *,
+            subscription_id: str | None = None,
+            timeout_seconds: int = 60,
+        ) -> list[Deployment]:
+            _ = timeout_seconds
+            _ = subscription_id
+            if name == "acct-a":
+                raise DiscoveryError(detail="boom")
+            _require(condition=rg == "rg-b", message="Expected rg-b")
+            return [Deployment(name="d", model="gpt-4o")]
+
+        with (
+            patch("azure_opencode_setup.discovery.list_subscriptions_detailed", return_value=subs),
+            patch(
+                "azure_opencode_setup.discovery.list_cognitive_accounts",
+                side_effect=fake_accounts,
+            ),
+            patch("azure_opencode_setup.discovery.list_deployments", side_effect=fake_deployments),
+        ):
+            chosen, _others = pick_best_cognitive_account(timeout_seconds=5)
+
+        _require(condition=chosen.account.name == "acct-b", message="Expected acct-b chosen")
+
+    def test_raises_when_no_accounts_found(self) -> None:
+        """If no accounts exist across subscriptions, raise DiscoveryError."""
+        subs = [Subscription(id="sub-1", name="Sub One")]
+        with (
+            patch("azure_opencode_setup.discovery.list_subscriptions_detailed", return_value=subs),
+            patch("azure_opencode_setup.discovery.list_cognitive_accounts", return_value=[]),
+            pytest.raises(DiscoveryError, match="No Cognitive Services accounts found"),
+        ):
+            pick_best_cognitive_account(timeout_seconds=5)
 
 
 class TestListCognitiveAccounts:
@@ -211,6 +522,15 @@ class TestListCognitiveAccounts:
         ):
             list_cognitive_accounts("valid-sub-id")
 
+    def test_raises_discovery_error_on_non_dict_list_items(self) -> None:
+        """Raises DiscoveryError when list contains non-dict items."""
+        mock_result = _mock_subprocess_result(stdout='["string", 123, null]', returncode=0)
+        with (
+            patch("azure_opencode_setup.discovery.subprocess.run", return_value=mock_result),
+            pytest.raises(DiscoveryError, match="expected object"),
+        ):
+            list_cognitive_accounts("valid-sub-id")
+
     def test_calls_correct_az_command(self) -> None:
         """Calls the correct az CLI command with subscription."""
         mock_result = _mock_subprocess_result(stdout="[]", returncode=0)
@@ -222,12 +542,15 @@ class TestListCognitiveAccounts:
             mock_run.assert_called_once()
             call_args = mock_run.call_args
             cmd = call_args[0][0]
-            _require(condition="cognitiveservices" in cmd, message="Expected cognitiveservices")
-            _require(condition="account" in cmd, message="Expected account")
-            _require(condition="list" in cmd, message="Expected list")
-            _require(
-                condition="--subscription" in cmd or any("my-subscription-123" in c for c in cmd),
-                message="Expected subscription parameter",
+            _assert_az_command(
+                cmd=cmd,
+                contains=[
+                    "cognitiveservices",
+                    "account",
+                    "list",
+                    "--subscription",
+                    "my-subscription-123",
+                ],
             )
 
 
@@ -330,10 +653,29 @@ class TestListDeployments:
             mock_run.assert_called_once()
             call_args = mock_run.call_args
             cmd = call_args[0][0]
-            _require(condition="deployment" in cmd, message="Expected deployment")
-            _require(condition="list" in cmd, message="Expected list")
+            _assert_az_command(
+                cmd=cmd,
+                contains=["cognitiveservices", "account", "deployment", "list"],
+            )
             _require(condition="-g" in cmd or "--resource-group" in cmd, message="Expected -g")
             _require(condition="-n" in cmd or "--name" in cmd, message="Expected -n")
+
+    def test_includes_subscription_when_provided(self) -> None:
+        """Includes --subscription when subscription_id is provided."""
+        mock_result = _mock_subprocess_result(stdout="[]", returncode=0)
+        with patch(
+            "azure_opencode_setup.discovery.subprocess.run",
+            return_value=mock_result,
+        ) as mock_run:
+            _ = list_deployments(
+                "test-rg",
+                "test-account",
+                subscription_id="sub-1",
+            )
+
+        cmd = mock_run.call_args[0][0]
+        _require(condition="--subscription" in cmd, message="Expected --subscription")
+        _require(condition="sub-1" in cmd, message="Expected subscription id")
 
 
 class TestGetApiKey:
@@ -453,8 +795,21 @@ class TestGetApiKey:
             mock_run.assert_called_once()
             call_args = mock_run.call_args
             cmd = call_args[0][0]
-            _require(condition="keys" in cmd, message="Expected keys")
-            _require(condition="list" in cmd, message="Expected list")
+            _assert_az_command(cmd=cmd, contains=["cognitiveservices", "account", "keys", "list"])
+
+    def test_includes_subscription_when_provided(self) -> None:
+        """Includes --subscription when subscription_id is provided."""
+        json_output = json.dumps({"key1": "key", "key2": "key2"})
+        mock_result = _mock_subprocess_result(stdout=json_output, returncode=0)
+        with patch(
+            "azure_opencode_setup.discovery.subprocess.run",
+            return_value=mock_result,
+        ) as mock_run:
+            _ = get_api_key("test-rg", "test-account", subscription_id="sub-1")
+
+        cmd = mock_run.call_args[0][0]
+        _require(condition="--subscription" in cmd, message="Expected --subscription")
+        _require(condition="sub-1" in cmd, message="Expected subscription id")
 
 
 class TestInputValidation:

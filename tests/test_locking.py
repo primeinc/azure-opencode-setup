@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import portalocker
@@ -17,8 +18,6 @@ from azure_opencode_setup.locking import backup_file
 from azure_opencode_setup.locking import file_lock
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from pytest_mock import MockerFixture
 
 _BACKUP_ITERATIONS = 10
