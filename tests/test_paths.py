@@ -96,11 +96,9 @@ class TestEnsureParentDir:
         ensure_parent_dir(target)
         _require(condition=target.parent.is_dir(), message="Expected parent dir exists")
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only test")
     def test_posix_permissions_on_auth_parent(self, tmp_path: Path) -> None:
         """On POSIX, auth parent dir should be 0o700 (user-only)."""
-        if sys.platform == "win32":
-            return
-
         target = tmp_path / "secure" / "auth.json"
         ensure_parent_dir(target, secure=True)
         perm = target.parent.stat()
@@ -109,11 +107,9 @@ class TestEnsureParentDir:
             message="Expected secure parent permissions",
         )
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only test")
     def test_secure_flag_false_allows_group(self, tmp_path: Path) -> None:
         """secure=False should not enforce 0o700 on POSIX."""
-        if sys.platform == "win32":
-            return
-
         target = tmp_path / "insecure" / "auth.json"
         ensure_parent_dir(target, secure=False)
         perm = target.parent.stat()

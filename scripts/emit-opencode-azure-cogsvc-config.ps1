@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
   Discovers Azure AI Services deployments and emits/applies an opencode.json provider block.

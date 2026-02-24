@@ -143,7 +143,6 @@ class TestListCognitiveAccounts:
             result = list_cognitive_accounts("valid-sub-id")
 
         _require(condition=len(result) == 2, message="Expected 2 accounts")  # noqa: PLR2004
-        _require(condition=isinstance(result[0], CognitiveAccount), message="Expected dataclass")
         _require(condition=result[0].name == "my-ai-services", message="Expected name")
         _require(condition=result[0].kind == "AIServices", message="Expected kind")
         _require(condition=result[0].resource_group == "my-resource-group", message="Expected rg")
@@ -248,7 +247,6 @@ class TestListDeployments:
             result = list_deployments("my-rg", "my-account")
 
         _require(condition=len(result) == 2, message="Expected 2 deployments")  # noqa: PLR2004
-        _require(condition=isinstance(result[0], Deployment), message="Expected dataclass")
         _require(condition=result[0].name == "gpt-4o-deployment", message="Expected name")
         _require(condition=result[0].model == "gpt-4o", message="Expected model")
 

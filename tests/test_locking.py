@@ -82,11 +82,9 @@ class TestBackupFile:
             message="Expected same parent directory",
         )
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only test")
     def test_backup_has_restricted_perms_on_posix(self, tmp_path: Path) -> None:
         """Backup permissions are restricted on POSIX."""
-        if sys.platform == "win32":
-            return
-
         original = tmp_path / "auth.json"
         original.write_text("{}", encoding="utf-8")
         original.chmod(0o644)
@@ -133,6 +131,7 @@ class TestBackupFile:
         # Assert restrict_permissions was called with the backup path
         mock_restrict.assert_called_once_with(backup)
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-specific atomic permission test")
     def test_backup_created_with_restricted_perms_atomically(
         self,
         tmp_path: Path,
@@ -151,9 +150,6 @@ class TestBackupFile:
         backup file content is visible to other processes (i.e., perms are
         set atomically with creation, not as a separate step).
         """
-        if sys.platform == "win32":
-            pytest.skip("POSIX-specific atomic permission test")
-
         perms_at_copy_time: list[int] = []
 
         original_copy2 = shutil.copy2
@@ -215,7 +211,7 @@ class TestBackupFile:
         from azure_opencode_setup.io import restrict_permissions
 
         with pytest.raises(OSError, match="Permission denied"):
-            restrict_permissions(original, strict=True)  # type: ignore[call-arg]
+            restrict_permissions(original, strict=True)
 
     def test_windows_username_from_win32_api_not_env(
         self,

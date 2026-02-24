@@ -49,6 +49,7 @@ def _private_callable(name: str) -> object:
     _require(condition=callable(attr), message="Expected callable")
     return attr
 
+
 class TestReadJsonObject:
     """Behavior tests for read_json_object."""
 
@@ -188,42 +189,34 @@ class TestAtomicWriteJson:
 class TestRestrictPermissions:
     """Behavior tests for restrict_permissions and secure writes."""
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only test")
     def test_posix_sets_0600(self, tmp_path: Path) -> None:
         """On POSIX, restrict_permissions sets 0o600."""
-        if sys.platform == "win32":
-            return
-
         p = tmp_path / "protected.json"
         p.write_text("{}", encoding="utf-8")
         restrict_permissions(p)
         mode = stat.S_IMODE(p.stat().st_mode)
         _require(condition=mode == _MODE_FILE_USER_ONLY, message="Expected 0o600")
 
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows-only test")
     def test_windows_calls_acl_restriction(self, tmp_path: Path) -> None:
         """On Windows, restrict_permissions must attempt ACL restriction."""
-        if sys.platform != "win32":
-            return
-
         p = tmp_path / "protected.json"
         p.write_text("{}", encoding="utf-8")
         restrict_permissions(p)
         _ = p.read_text(encoding="utf-8")
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only test")
     def test_posix_atomic_write_restricts(self, tmp_path: Path) -> None:
         """atomic_write_json with secure=True should restrict permissions."""
-        if sys.platform == "win32":
-            return
-
         p = tmp_path / "secure.json"
         atomic_write_json(p, {"data": "value"}, secure=True)
         mode = stat.S_IMODE(p.stat().st_mode)
         _require(condition=mode == _MODE_FILE_USER_ONLY, message="Expected 0o600")
 
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows-only test")
     def test_windows_atomic_write_secure(self, tmp_path: Path) -> None:
         """atomic_write_json with secure=True should not fail on Windows."""
-        if sys.platform != "win32":
-            return
-
         p = tmp_path / "secure.json"
         atomic_write_json(p, {"data": "value"}, secure=True)
         result = json.loads(p.read_text(encoding="utf-8"))
