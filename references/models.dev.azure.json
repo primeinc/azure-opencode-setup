@@ -53,6 +53,7 @@
       "gpt-5.2",
       "gpt-5.2-chat",
       "gpt-5.2-codex",
+      "gpt-5.3-codex",
       "grok-3",
       "grok-3-mini",
       "grok-4",
@@ -102,7 +103,7 @@
       "text-embedding-3-small",
       "text-embedding-ada-002"
     ],
-    "model_count": 95,
+    "model_count": 96,
     "snapshot_note": "Vendored subset of models.dev/api.json. Refresh via: .github/workflows/refresh-models-snapshot.yml"
   },
   "azure-cognitive-services": {
@@ -158,6 +159,7 @@
       "gpt-5.2",
       "gpt-5.2-chat",
       "gpt-5.2-codex",
+      "gpt-5.3-codex",
       "grok-3",
       "grok-3-mini",
       "grok-4",
@@ -207,13 +209,13 @@
       "text-embedding-3-small",
       "text-embedding-ada-002"
     ],
-    "model_count": 94,
+    "model_count": 95,
     "snapshot_note": "Vendored subset of models.dev/api.json. Refresh via: .github/workflows/refresh-models-snapshot.yml"
   },
   "_meta": {
     "source": "https://models.dev/api.json",
-    "captured": "2026-02-21T07:46:39Z",
-    "purpose": "Deterministic CI snapshot. INV-01 and INV-02 assert against this file. Live-fetch job in refresh-models-snapshot.yml detects drift and opens a PR.",
-    "content_hash": "eb3ba50387b076dc"
+    "captured": "2026-03-02T06:21:54Z",
+    "content_hash": "9a884d2a534cd400",
+    "purpose": "Deterministic CI snapshot. INV-01 and INV-02 assert against this file."
   }
-}
+}\n
